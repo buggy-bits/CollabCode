@@ -2,7 +2,7 @@
 
 import { config } from "@repo/eslint-config/base";
 
-/** @type {import("eslint").Linter.Config} */
+/** @type {import("eslint").Linter.Config[]} */
 export default [
   ...config,
   {
@@ -11,4 +11,4 @@ export default [
       // Add any project-specific rules here
     },
   },
-]; 
+];
