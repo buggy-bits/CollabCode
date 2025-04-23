@@ -1,0 +1,9 @@
+#!/bin/sh
+. "$(dirname "$0")/_/husky.sh"
+
+# Run type checking for the entire project
+echo "Running type checking..."
+npm run check-types
+
+# ./node_modules/.bin/turbo run test
+echo "Skipping tests for now."
