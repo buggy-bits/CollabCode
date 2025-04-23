@@ -1,84 +1,145 @@
-# Turborepo starter
+# CollabCode - Full Stack TypeScript Monorepo
 
-This Turborepo starter is maintained by the Turborepo core team.
+A modern full-stack application built with TypeScript, React, Express, MongoDB, and Redis.
 
-## Using this example
-
-Run the following command:
-
-```sh
-npx create-turbo@latest
-```
-
-## What's inside?
-
-This Turborepo includes the following packages/apps:
-
-### Apps and Packages
-
-- `docs`: a [Next.js](https://nextjs.org/) app
-- `web`: another [Next.js](https://nextjs.org/) app
-- `@repo/ui`: a stub React component library shared by both `web` and `docs` applications
-- `@repo/eslint-config`: `eslint` configurations (includes `eslint-config-next` and `eslint-config-prettier`)
-- `@repo/typescript-config`: `tsconfig.json`s used throughout the monorepo
-
-Each package/app is 100% [TypeScript](https://www.typescriptlang.org/).
-
-### Utilities
-
-This Turborepo has some additional tools already setup for you:
-
-- [TypeScript](https://www.typescriptlang.org/) for static type checking
-- [ESLint](https://eslint.org/) for code linting
-- [Prettier](https://prettier.io) for code formatting
-
-### Build
-
-To build all apps and packages, run the following command:
+## Project Structure
 
 ```
-cd my-turborepo
-pnpm build
+.
+├── apps/
+│   ├── api/         # Express.js api service
+│   └── web/            # React frontend application
+├── packages/           # Shared packages
+│   ├── eslint-config/  # ESLint configurations
+│   ├── typescript-config/ # TypeScript configurations
+│   └── ui/            # Shared UI components
+├── docker-compose.yml  # Docker configuration for MongoDB and Redis
+└── package.json       # Root package.json
 ```
 
-### Develop
+## Prerequisites
 
-To develop all apps and packages, run the following command:
+- Node.js >= 18
+- Docker and Docker Compose
+- npm >= 10.9.2
 
+## Getting Started
+
+1. Clone the repository:
+   ```bash
+   git clone https://github.com/yourusername/collabcode.git
+   cd collabcode
+   ```
+
+2. Install dependencies:
+   ```bash
+   npm install
+   ```
+
+3. Start MongoDB and Redis:
+   ```bash
+   docker-compose up -d
+   ```
+
+4. Start the development servers:
+   ```bash
+   npm run dev
+   ```
+
+This will start:
+- api server on http://localhost:3000
+- Frontend server on http://localhost:5173
+
+## Development
+
+### api
+
+The api is an Express.js application with TypeScript. It includes:
+- MongoDB integration
+- Redis integration
+- CORS enabled
+- Helmet for security
+- Morgan for logging
+
+### Frontend
+
+The frontend is a React application with Vite. It includes:
+- TypeScript
+- React Router
+- React Query
+- Axios for API calls
+- ESLint and Prettier
+
+## Git Hooks
+
+The project uses Husky for Git hooks:
+- pre-commit: Runs lint-staged (ESLint and Prettier)
+- pre-push: Runs type checking
+
+## Docker
+
+The project uses Docker for local development:
+- MongoDB on port 27017
+- Redis on port 6379
+
+See [DOCKER.md](DOCKER.md) for more details.
+
+## Scripts
+
+- `npm run dev`: Start development servers
+- `npm run build`: Build all packages
+- `npm run lint`: Run ESLint
+- `npm run format`: Run Prettier
+- `npm run check-types`: Run TypeScript type checking
+
+## License
+
+MIT
+
+
+
+
+
+### My dev setup
+
+I used a Hybrid setup where Mongo and Redis runs on docker and web, api runs locally.
+
+Start Mongo + Redis with command
+```bash
+# from repo root
+docker-compose up -d mongodb redis
 ```
-cd my-turborepo
-pnpm dev
+Start backend service with
+
+```bash
+#apps/api
+npm run dev
 ```
 
-### Remote Caching
-
-> [!TIP]
-> Vercel Remote Cache is free for all plans. Get started today at [vercel.com](https://vercel.com/signup?/signup?utm_source=remote-cache-sdk&utm_campaign=free_remote_cache).
-
-Turborepo can use a technique known as [Remote Caching](https://turbo.build/docs/core-concepts/remote-caching) to share cache artifacts across machines, enabling you to share build caches with your team and CI/CD pipelines.
-
-By default, Turborepo will cache locally. To enable Remote Caching you will need an account with Vercel. If you don't have an account you can [create one](https://vercel.com/signup?utm_source=turborepo-examples), then enter the following commands:
-
-```
-cd my-turborepo
-npx turbo login
+Start Vite with
+```bash
+#apps/web
+npm run dev
 ```
 
-This will authenticate the Turborepo CLI with your [Vercel account](https://vercel.com/docs/concepts/personal-accounts/overview).
-
-Next, you can link your Turborepo to your Remote Cache by running the following command from the root of your Turborepo:
-
+### MongoDB
+Connect to MongoDb Using the Shell
+```bash
+docker exec -it <container_name_or_id> mongosh
 ```
-npx turbo link
+For my case, container name is `collabcode-mongodb-1`
+```bash
+docker exec -it collabcode-mongodb-1 mongosh
 ```
+For a visual interface, use MongoDB Compass
+- Open GUI application and connect to `mongodb://localhost:27017`
 
-## Useful Links
+### Redis
+Use the Redis command-line interface (redis-cli) inside the container to interact with the database.
 
-Learn more about the power of Turborepo:
-
-- [Tasks](https://turbo.build/docs/core-concepts/monorepos/running-tasks)
-- [Caching](https://turbo.build/docs/core-concepts/caching)
-- [Remote Caching](https://turbo.build/docs/core-concepts/remote-caching)
-- [Filtering](https://turbo.build/docs/core-concepts/monorepos/filtering)
-- [Configuration Options](https://turbo.build/docs/reference/configuration)
-- [CLI Usage](https://turbo.build/docs/reference/command-line-reference)
+Step 1: Enter the Redis CLI
+```bash
+docker exec -it <container_name_or_id> redis-cli
+```
+Use a GUI Tool (RedisInsight)
+For a visual interface, use RedisInsight (free GUI by Redis):

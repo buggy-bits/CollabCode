@@ -5,13 +5,31 @@
     "build": "turbo run build",
     "dev": "turbo run dev",
     "lint": "turbo run lint",
+    "lint:fix": "eslint --fix .",
     "format": "prettier --write \"**/*.{ts,tsx,md}\"",
-    "check-types": "turbo run check-types"
+    "check-types": "turbo run check-types",
+    "prepare": "husky install",
+    "start": "turbo run start"
   },
   "devDependencies": {
+    "@types/express": "^4.17.21",
+    "@types/mongoose": "^5.11.97",
+    "@types/node": "^20.11.24",
+    "@types/redis": "^4.0.11",
+    "husky": "^9.1.7",
+    "lint-staged": "^15.5.1",
     "prettier": "^3.5.3",
     "turbo": "^2.5.0",
     "typescript": "5.8.2"
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.18.3",
+    "helmet": "^7.1.0",
+    "mongoose": "^8.2.0",
+    "morgan": "^1.10.0",
+    "redis": "^4.6.13"
   },
   "engines": {
     "node": ">=18"
@@ -20,5 +38,11 @@
   "workspaces": [
     "apps/*",
     "packages/*"
-  ]
+  ],
+  "lint-staged": {
+    "**/*.{ts,tsx,js,jsx,json,md}": [
+      "eslint --fix",
+      "prettier --write"
+    ]
+  }
 }
