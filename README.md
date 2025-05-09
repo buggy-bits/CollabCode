@@ -100,6 +100,33 @@ See [DOCKER.md](DOCKER.md) for more details.
 - `npm run format`: Run Prettier
 - `npm run check-types`: Run TypeScript type checking
 
+## Real-Time Collaboration
+
+CollabCode features powerful real-time collaboration capabilities:
+
+- **Shared Editing**: Multiple users can edit code simultaneously with conflict-free merging
+- **Cursor Tracking**: See other users' cursors and selections in real-time
+- **Presence Awareness**: Know who's currently active in your coding session
+- **Language Support**: Collaborate on code in multiple programming languages
+
+### How It Works
+
+The collaboration system is built on:
+
+1. **Socket.IO**: For WebSocket communication between clients
+2. **Yjs**: For Conflict-free Replicated Data Types (CRDT) that enable conflict-free merges
+3. **Redis**: For document caching and session management with TTL
+4. **MongoDB**: For persistent storage of room and user data
+
+For more detailed information on the WebSocket implementation, see [WEBSOCKET_SETUP.md](WEBSOCKET_SETUP.md).
+
+### Key Features
+
+- **Data Consistency**: Using CRDT ensures that all users see the same document state
+- **Low Latency**: Changes are propagated immediately between users
+- **Fault Tolerance**: Redis caching provides resilience against server restarts
+- **Scalability**: The architecture supports multiple concurrent editing sessions
+
 ## License
 
 MIT

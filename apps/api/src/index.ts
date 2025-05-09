@@ -8,6 +8,7 @@ import dotenv from "dotenv";
 import http from "http";
 import { setupSocketServer } from "./socket/index.js";
 import roomRoutes from "./routes/roomRoutes.js";
+import { requestLogger } from "./middleware/requestLogger.js";
 
 // Load environment variables
 dotenv.config();
@@ -16,8 +17,36 @@ const app = express();
 const port = process.env.PORT || 3000;
 const server = http.createServer(app);
 
-// Set up Socket.io
-setupSocketServer(server);
+// Redis connection
+export const redisClient = createClient({
+  url: process.env.REDIS_URL || "redis://localhost:6379",
+});
+
+// Create a separate Redis client for pub/sub subscriptions
+export const redisPubSubClient = redisClient.duplicate();
+
+redisClient.on("error", (err) => console.error("Redis Client Error", err));
+redisClient.on("connect", () => console.log("Connected to Redis"));
+
+redisPubSubClient.on("error", (err) =>
+  console.error("Redis PubSub Client Error", err),
+);
+redisPubSubClient.on("connect", () =>
+  console.log("PubSub client connected to Redis"),
+);
+
+// Connect to Redis
+(async () => {
+  try {
+    await redisClient.connect();
+    await redisPubSubClient.connect();
+  } catch (err) {
+    console.error("Redis connection error:", err);
+  }
+})();
+
+// Set up Socket.io - pass Redis client for shared usage
+const io = setupSocketServer(server);
 
 // Middleware
 app.use(cors()); // Enable CORS for all routes
@@ -25,6 +54,7 @@ app.use(helmet()); // Security middleware
 app.use(morgan("dev")); // Logging middleware
 app.use(express.urlencoded({ extended: true })); // Parse URL-encoded bodies
 app.use(express.json()); // Parse JSON bodies
+app.use(requestLogger); // Request debug logger
 
 // MongoDB connection
 mongoose
@@ -34,18 +64,6 @@ mongoose
   )
   .then(() => console.log("Connected to MongoDB"))
   .catch((err) => console.error("MongoDB connection error:", err));
-
-// Redis connection
-const redisClient = createClient({
-  url: process.env.REDIS_URL || "redis://localhost:6379",
-});
-
-redisClient.on("error", (err) => console.error("Redis Client Error", err));
-redisClient.on("connect", () => console.log("Connected to Redis"));
-// Add this line to actually connect to Redis
-redisClient
-  .connect()
-  .catch((err) => console.error("Redis connection error:", err));
 
 // API Routes
 app.use("/api/rooms", roomRoutes);
@@ -63,4 +81,43 @@ app.get("/ping", (req, res) => {
 server.listen(port, () => {
   console.log(`Server running on port ${port}`);
   console.log(`WebSocket server available at ws://localhost:${port}`);
+});
+
+// Handle graceful shutdown
+const gracefulShutdown = async () => {
+  console.log("Shutting down server gracefully...");
+
+  // Close HTTP server (stops accepting new connections)
+  server.close(() => console.log("HTTP server closed"));
+
+  // Close Socket.IO connections
+  io.close(() => console.log("Socket.IO server closed"));
+
+  // Disconnect from Redis
+  if (redisClient.isOpen) {
+    await redisClient.disconnect();
+    console.log("Redis client connection closed");
+  }
+
+  // Disconnect from Redis PubSub client
+  if (redisPubSubClient.isOpen) {
+    await redisPubSubClient.disconnect();
+    console.log("Redis PubSub client connection closed");
+  }
+
+  // Disconnect from MongoDB
+  if (mongoose.connection.readyState === 1) {
+    await mongoose.connection.close();
+    console.log("MongoDB connection closed");
+  }
+
+  process.exit(0);
+};
+
+// Listen for termination signals
+process.on("SIGINT", gracefulShutdown);
+process.on("SIGTERM", gracefulShutdown);
+process.on("uncaughtException", (err) => {
+  console.error("Uncaught exception:", err);
+  gracefulShutdown();
 });
