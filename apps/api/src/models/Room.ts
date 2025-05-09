@@ -10,15 +10,36 @@ export interface IRoom extends Document {
   updatedAt: Date;
 }
 
-const RoomSchema: Schema = new Schema(
+const RoomSchema = new Schema(
   {
-    name: { type: String, required: true, trim: true },
-    createdBy: { type: String, required: true },
-    language: { type: String, default: "javascript" },
-    isPrivate: { type: Boolean, default: false },
-    password: { type: String },
+    name: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+    createdBy: {
+      type: String,
+      required: true,
+    },
+    language: {
+      type: String,
+      required: true,
+      default: "javascript",
+    },
+    isPrivate: {
+      type: Boolean,
+      default: false,
+    },
+    password: {
+      type: String,
+      required: function (this: IRoom) {
+        return this.isPrivate;
+      },
+    },
   },
-  { timestamps: true },
+  {
+    timestamps: true,
+  },
 );
 
 // Don't return the password in query results
