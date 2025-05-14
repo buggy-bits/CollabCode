@@ -1,5 +1,42 @@
 import { io, Socket } from "socket.io-client";
 
+// Define types for better type safety
+export interface User {
+  id: string;
+  username: string;
+  color: string;
+}
+
+export interface CursorPosition {
+  line: number;
+  column: number;
+}
+
+export interface AwarenessState {
+  cursor?: CursorPosition;
+  selection?: {
+    start: CursorPosition;
+    end: CursorPosition;
+  };
+  clientId?: string;
+  username?: string;
+  color?: string;
+}
+
+export interface ChatMessage {
+  id: string;
+  sender: string;
+  content: string;
+  timestamp: string;
+  color: string;
+}
+
+export interface CodeOperation {
+  type: "update" | "content" | "language-change";
+  update?: string;
+  content?: string;
+}
+
 // Socket.io instance for room management
 let roomSocket: Socket | null = null;
 
@@ -7,7 +44,7 @@ let roomSocket: Socket | null = null;
 export const initializeSockets = () => {
   const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3000";
 
-  // Initialize room socket
+  // Initialize room socket if not already initialized
   if (!roomSocket) {
     roomSocket = io(`${API_URL}/rooms`, {
       autoConnect: true,
@@ -69,7 +106,7 @@ export const joinEditor = (roomId: string, language: string = "javascript") => {
 export const sendCodeEdit = (
   roomId: string,
   language: string,
-  operation: any,
+  operation: CodeOperation,
 ) => {
   if (!roomSocket) {
     throw new Error("Socket not initialized");
@@ -79,7 +116,7 @@ export const sendCodeEdit = (
 };
 
 // Send awareness updates (cursor, selection)
-export const updateAwareness = (awarenessState: any) => {
+export const updateAwareness = (awarenessState: AwarenessState) => {
   if (!roomSocket) {
     throw new Error("Socket not initialized");
   }
@@ -122,7 +159,7 @@ export const updateRoomLanguage = async (roomId: string, language: string) => {
 };
 
 // Send chat message
-export const sendChatMessage = (roomId: string, message: any) => {
+export const sendChatMessage = (roomId: string, message: ChatMessage) => {
   if (!roomSocket) {
     throw new Error("Socket not initialized");
   }
@@ -151,7 +188,9 @@ export const onSync = (callback: (syncState: Uint8Array) => void) => {
 };
 
 // Listen for awareness updates (cursor, selection)
-export const onAwareness = (callback: (awarenessState: any) => void) => {
+export const onAwareness = (
+  callback: (awarenessState: AwarenessState) => void,
+) => {
   if (!roomSocket) {
     throw new Error("Socket not initialized");
   }
@@ -161,7 +200,14 @@ export const onAwareness = (callback: (awarenessState: any) => void) => {
 };
 
 // Listen for remote cursor updates
-export const onRemoteCursor = (callback: (cursor: any) => void) => {
+export const onRemoteCursor = (
+  callback: (cursor: {
+    id: string;
+    username: string;
+    color: string;
+    position: CursorPosition;
+  }) => void,
+) => {
   if (!roomSocket) {
     throw new Error("Socket not initialized");
   }
@@ -171,7 +217,7 @@ export const onRemoteCursor = (callback: (cursor: any) => void) => {
 };
 
 // Listen for user joined events
-export const onUserJoined = (callback: (user: any) => void) => {
+export const onUserJoined = (callback: (user: User) => void) => {
   if (!roomSocket) {
     throw new Error("Socket not initialized");
   }
@@ -181,7 +227,7 @@ export const onUserJoined = (callback: (user: any) => void) => {
 };
 
 // Listen for user left events
-export const onUserLeft = (callback: (user: any) => void) => {
+export const onUserLeft = (callback: (user: User) => void) => {
   if (!roomSocket) {
     throw new Error("Socket not initialized");
   }
@@ -191,7 +237,7 @@ export const onUserLeft = (callback: (user: any) => void) => {
 };
 
 // Listen for user list updates
-export const onUserListUpdated = (callback: (users: any[]) => void) => {
+export const onUserListUpdated = (callback: (users: User[]) => void) => {
   if (!roomSocket) {
     throw new Error("Socket not initialized");
   }
@@ -201,13 +247,25 @@ export const onUserListUpdated = (callback: (users: any[]) => void) => {
 };
 
 // Listen for chat messages
-export const onChatMessage = (callback: (message: any) => void) => {
+export const onChatMessage = (callback: (message: ChatMessage) => void) => {
   if (!roomSocket) {
     throw new Error("Socket not initialized");
   }
 
   roomSocket.on("chat-message", callback);
   return () => roomSocket?.off("chat-message", callback);
+};
+
+// Listen for language changes
+export const onLanguageChanged = (
+  callback: (data: { language: string }) => void,
+) => {
+  if (!roomSocket) {
+    throw new Error("Socket not initialized");
+  }
+
+  roomSocket.on("language-changed", callback);
+  return () => roomSocket?.off("language-changed", callback);
 };
 
 // Get the socket instance
