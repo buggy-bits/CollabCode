@@ -8,15 +8,28 @@ export interface User {
 }
 
 export interface CursorPosition {
-  line: number;
+  lineNumber: number;
   column: number;
 }
 
+export interface SelectionRange {
+  startLineNumber: number;
+  startColumn: number;
+  endLineNumber: number;
+  endColumn: number;
+}
+
 export interface AwarenessState {
+  user?: {
+    name: string;
+    color: string;
+  };
   cursor?: CursorPosition;
-  selection?: {
-    start: CursorPosition;
-    end: CursorPosition;
+  selection?: SelectionRange;
+  isTyping?: boolean;
+  scrollPosition?: {
+    scrollTop: number;
+    scrollLeft: number;
   };
   clientId?: string;
   username?: string;
@@ -112,6 +125,7 @@ export const sendCodeEdit = (
     throw new Error("Socket not initialized");
   }
 
+  console.log("Sending code edit:", operation);
   roomSocket.emit("code-edit", roomId, language, operation);
 };
 
@@ -121,6 +135,7 @@ export const updateAwareness = (awarenessState: AwarenessState) => {
     throw new Error("Socket not initialized");
   }
 
+  console.log("Sending awareness update:", awarenessState);
   roomSocket.emit("awareness", awarenessState);
 };
 
@@ -130,6 +145,7 @@ export const changeLanguage = (roomId: string, language: string) => {
     throw new Error("Socket not initialized");
   }
 
+  console.log("Changing language to:", language);
   // Use code-edit to send language change notification
   roomSocket.emit("code-edit", roomId, language, { type: "language-change" });
 };
@@ -173,8 +189,13 @@ export const onUpdate = (callback: (update: Uint8Array) => void) => {
     throw new Error("Socket not initialized");
   }
 
-  roomSocket.on("update", callback);
-  return () => roomSocket?.off("update", callback);
+  const handler = (update: Uint8Array) => {
+    console.log("Received update event");
+    callback(update);
+  };
+
+  roomSocket.on("update", handler);
+  return () => roomSocket?.off("update", handler);
 };
 
 // Listen for document sync
@@ -183,8 +204,13 @@ export const onSync = (callback: (syncState: Uint8Array) => void) => {
     throw new Error("Socket not initialized");
   }
 
-  roomSocket.on("sync", callback);
-  return () => roomSocket?.off("sync", callback);
+  const handler = (syncState: Uint8Array) => {
+    console.log("Received sync event");
+    callback(syncState);
+  };
+
+  roomSocket.on("sync", handler);
+  return () => roomSocket?.off("sync", handler);
 };
 
 // Listen for awareness updates (cursor, selection)
@@ -195,8 +221,13 @@ export const onAwareness = (
     throw new Error("Socket not initialized");
   }
 
-  roomSocket.on("awareness", callback);
-  return () => roomSocket?.off("awareness", callback);
+  const handler = (awarenessState: AwarenessState) => {
+    console.log("Received awareness event:", awarenessState);
+    callback(awarenessState);
+  };
+
+  roomSocket.on("awareness", handler);
+  return () => roomSocket?.off("awareness", handler);
 };
 
 // Listen for remote cursor updates
@@ -212,8 +243,18 @@ export const onRemoteCursor = (
     throw new Error("Socket not initialized");
   }
 
-  roomSocket.on("remote-cursor", callback);
-  return () => roomSocket?.off("remote-cursor", callback);
+  const handler = (cursor: {
+    id: string;
+    username: string;
+    color: string;
+    position: CursorPosition;
+  }) => {
+    console.log("Received remote cursor event:", cursor);
+    callback(cursor);
+  };
+
+  roomSocket.on("remote-cursor", handler);
+  return () => roomSocket?.off("remote-cursor", handler);
 };
 
 // Listen for user joined events
@@ -222,8 +263,13 @@ export const onUserJoined = (callback: (user: User) => void) => {
     throw new Error("Socket not initialized");
   }
 
-  roomSocket.on("user-joined", callback);
-  return () => roomSocket?.off("user-joined", callback);
+  const handler = (user: User) => {
+    console.log("User joined:", user);
+    callback(user);
+  };
+
+  roomSocket.on("user-joined", handler);
+  return () => roomSocket?.off("user-joined", handler);
 };
 
 // Listen for user left events
@@ -232,8 +278,13 @@ export const onUserLeft = (callback: (user: User) => void) => {
     throw new Error("Socket not initialized");
   }
 
-  roomSocket.on("user-left", callback);
-  return () => roomSocket?.off("user-left", callback);
+  const handler = (user: User) => {
+    console.log("User left:", user);
+    callback(user);
+  };
+
+  roomSocket.on("user-left", handler);
+  return () => roomSocket?.off("user-left", handler);
 };
 
 // Listen for user list updates
@@ -242,8 +293,13 @@ export const onUserListUpdated = (callback: (users: User[]) => void) => {
     throw new Error("Socket not initialized");
   }
 
-  roomSocket.on("user-list-updated", callback);
-  return () => roomSocket?.off("user-list-updated", callback);
+  const handler = (users: User[]) => {
+    console.log("User list updated:", users);
+    callback(users);
+  };
+
+  roomSocket.on("user-list-updated", handler);
+  return () => roomSocket?.off("user-list-updated", handler);
 };
 
 // Listen for chat messages
@@ -264,8 +320,13 @@ export const onLanguageChanged = (
     throw new Error("Socket not initialized");
   }
 
-  roomSocket.on("language-changed", callback);
-  return () => roomSocket?.off("language-changed", callback);
+  const handler = (data: { language: string }) => {
+    console.log("Language changed:", data);
+    callback(data);
+  };
+
+  roomSocket.on("language-changed", handler);
+  return () => roomSocket?.off("language-changed", handler);
 };
 
 // Get the socket instance
