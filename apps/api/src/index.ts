@@ -9,6 +9,10 @@ import http from "http";
 import { setupSocketServer } from "./socket/index.js";
 import roomRoutes from "./routes/roomRoutes.js";
 import { requestLogger } from "./middleware/requestLogger.js";
+import {
+  RedisPubSubService,
+  RedisPresenceService,
+} from "./services/redisService.js";
 
 // Load environment variables
 dotenv.config();
@@ -40,6 +44,11 @@ redisPubSubClient.on("connect", () =>
   try {
     await redisClient.connect();
     await redisPubSubClient.connect();
+    console.log("Connected to Redis");
+
+    // Initialize Redis services after connection with type casting to avoid type errors
+    await RedisPubSubService.init(redisClient as any);
+    await RedisPresenceService.init(redisClient as any);
   } catch (err) {
     console.error("Redis connection error:", err);
   }
@@ -75,6 +84,11 @@ app.get("/health", (req, res) => {
 
 app.get("/ping", (req, res) => {
   res.json({ message: "pong" });
+});
+
+// Welcome route
+app.get("/", (req, res) => {
+  res.send("CollabCode API Server");
 });
 
 // Start server

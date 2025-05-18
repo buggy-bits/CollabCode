@@ -1,97 +1,100 @@
 import { Server as HttpServer } from "http";
-import { Server } from "socket.io";
+import { Server, Socket } from "socket.io";
+import { RedisClientType } from "redis";
 import { redisClient } from "../index.js";
 import {
   RedisPubSubService,
   RedisPresenceService,
 } from "../services/redisService.js";
-// Import Yjs dynamically to handle ESM/CommonJS interop
-let Y: any;
-import("yjs").then((module) => {
-  Y = module;
-});
+import * as Y from "yjs";
+
+// Types and Interfaces
+interface YDoc extends Y.Doc {
+  getText(name: string): Y.Text;
+}
+
+interface UserData {
+  username: string;
+  color: string;
+  active?: boolean;
+  joinedAt?: string;
+}
+
+interface AwarenessUpdate {
+  clientId?: string;
+  username?: string;
+  color?: string;
+  cursor?: {
+    lineNumber: number;
+    column: number;
+  };
+  selection?: {
+    startLineNumber: number;
+    startColumn: number;
+    endLineNumber: number;
+    endColumn: number;
+  };
+  isTyping?: boolean;
+  scrollPosition?: {
+    scrollTop: number;
+    scrollLeft: number;
+  };
+  timestamp?: number;
+}
+
+interface CodeOperation {
+  type: "update" | "content" | "language-change";
+  update?: string;
+  content?: string;
+}
+
+interface ChatMessage {
+  id: string;
+  sender: string;
+  content: string;
+  timestamp: string;
+  color: string;
+}
 
 // Document TTL in seconds (1 hour)
 const DOCUMENT_TTL = 3600;
 
-// Simple implementation to handle document updates
-function setupWSConnection(socket: any, doc: any) {
-  // Listen for document updates
-  socket.on("update", (update: Uint8Array) => {
-    try {
-      // Apply update to the document
-      Y.applyUpdate(doc, update);
+// Document store types
+type DocumentStore = Map<string, YDoc>;
+type SubscriptionStore = Map<string, boolean>;
 
-      // Publish to Redis for broadcasting to all clients (except sender)
-      RedisPubSubService.publish(
-        socket.data.roomId,
-        "update",
-        {
-          update: Buffer.from(update).toString("base64"),
-        },
-        socket.id,
-      );
+// Room document store - key is roomId:language
+const documentsInMemory: DocumentStore = new Map();
 
-      // Cache document state in Redis
-      const stateAsUpdate = Y.encodeStateAsUpdate(doc);
-      cacheDocumentState(socket.data.roomId, stateAsUpdate);
-    } catch (err) {
-      console.error("Error applying update:", err);
-    }
-  });
+// Store for room channel subscriptions - key is roomId
+const channelSubscriptions: SubscriptionStore = new Map();
 
-  // Send current state to new client
-  const state = Y.encodeStateAsUpdate(doc);
-  socket.emit("sync", state);
-
-  // Listen for awareness updates (cursor movements)
-  socket.on("awareness", (awarenessState: any) => {
-    if (!socket.data.roomId) return;
-
-    // Add the username and color to the awareness state from user data in Redis
-    getActiveUserData(socket.data.roomId, socket.id).then((userData) => {
-      // Enrich awareness data with user info
-      const enrichedState = {
-        ...awarenessState,
-        clientId: socket.id,
-        username: userData?.username || "Anonymous",
-        color: userData?.color || "#ffcc00",
-      };
-
-      // Publish cursor movement to Redis for all other users
-      RedisPubSubService.publish(
-        socket.data.roomId,
-        "awareness",
-        enrichedState,
-        socket.id,
-      );
-    });
-  });
+// Cache document state in Redis
+async function cacheDocumentState(
+  docKey: string,
+  stateAsUpdate: Uint8Array,
+): Promise<void> {
+  try {
+    const base64State = Buffer.from(stateAsUpdate).toString("base64");
+    await redisClient.set(`doc:${docKey}`, base64State, { EX: DOCUMENT_TTL });
+    console.log(`Cached document state for ${docKey}`);
+  } catch (err) {
+    console.error("Failed to cache document:", err);
+  }
 }
 
 // Get active user data from Redis
 async function getActiveUserData(
   roomId: string,
   socketId: string,
-): Promise<any> {
+): Promise<UserData | null> {
   try {
     const users = await RedisPresenceService.getUsers(roomId);
-    return users.find((user) => user.id === socketId);
+    const user = users.find((user) => user.id === socketId);
+    return user ? { username: user.username, color: user.color } : null;
   } catch (err) {
     console.error("Failed to get user data:", err);
     return null;
-  }
-}
-
-// Cache document state in Redis
-async function cacheDocumentState(docKey: string, stateAsUpdate: Uint8Array) {
-  try {
-    // Convert binary update to base64 for storage
-    const base64State = Buffer.from(stateAsUpdate).toString("base64");
-    await redisClient.set(`doc:${docKey}`, base64State, { EX: DOCUMENT_TTL });
-    console.log(`Cached document state for ${docKey}`);
-  } catch (err) {
-    console.error("Failed to cache document:", err);
   }
 }
 
@@ -112,71 +115,27 @@ async function getDocumentFromCache(
   }
 }
 
-// Track active session in Redis
-async function trackActiveSession(
+// Add a user to a room with Redis-based tracking
+async function addUserToRoom(
   roomId: string,
   socketId: string,
-  userData: any,
-) {
-  try {
-    // Store user data for this session
-    await redisClient.hSet(
-      `room:${roomId}:users`,
-      socketId,
-      JSON.stringify(userData),
-    );
-    // Set expiration for user data
-    await redisClient.expire(`room:${roomId}:users`, DOCUMENT_TTL);
+  username: string,
+): Promise<UserData> {
+  // Create user data
+  const userData: UserData = {
+    username,
+    color: getRandomColor(),
+    active: true,
+    joinedAt: new Date().toISOString(),
+  };
 
-    // Also maintain a set of active rooms for cleanup
-    await redisClient.sAdd("active_rooms", roomId);
-  } catch (err) {
-    console.error("Failed to track active session:", err);
-  }
+  // Track in Redis using our presence service
+  await RedisPresenceService.addUser(roomId, socketId, userData);
+
+  return userData;
 }
 
-// Remove active session from Redis
-async function removeActiveSession(roomId: string, socketId: string) {
-  try {
-    await redisClient.hDel(`room:${roomId}:users`, socketId);
-
-    // Check if room is empty and remove from active rooms if it is
-    const usersLeft = await redisClient.hLen(`room:${roomId}:users`);
-    if (usersLeft === 0) {
-      await redisClient.sRem("active_rooms", roomId);
-      // Don't delete the document immediately to allow for rejoining
-    }
-  } catch (err) {
-    console.error("Failed to remove active session:", err);
-  }
-}
-
-// Get all active users in a room from Redis
-async function getActiveUsersInRoom(roomId: string): Promise<any[]> {
-  try {
-    const usersData = await redisClient.hGetAll(`room:${roomId}:users`);
-    const users = [];
-
-    for (const [socketId, userData] of Object.entries(usersData)) {
-      const parsedData = JSON.parse(userData);
-      users.push({
-        id: socketId,
-        username: parsedData.username,
-        color: parsedData.color,
-      });
-    }
-
-    return users;
-  } catch (err) {
-    console.error("Failed to get active users:", err);
-    return [];
-  }
-}
-
-// Room document store - key is roomId:language
-const documentsInMemory = new Map<string, any>();
-
-// Generate a random color for a user
+// Utility functions
 function getRandomColor(): string {
   const colors = [
     "#3498db",
@@ -198,69 +157,239 @@ function getRandomColor(): string {
   return colors[Math.floor(Math.random() * colors.length)]!;
 }
 
-// Add a user to a room with Redis-based tracking
-async function addUserToRoom(
-  roomId: string,
-  socketId: string,
-  username: string,
-): Promise<any> {
-  // Create user data
-  const userData = {
-    username,
-    color: getRandomColor(),
-    active: true,
-    joinedAt: new Date().toISOString(),
-  };
+// Document state management
+class DocumentManager {
+  private static documents = new Map<string, YDoc>();
+  private static subscriptions = new Map<string, boolean>();
+  private static cleanupTimers = new Map<string, NodeJS.Timeout>();
+  private static readonly CLEANUP_DELAY = 1000 * 60 * 60; // 1 hour
 
-  // Track in Redis using our presence service
-  await RedisPresenceService.addUser(roomId, socketId, userData);
+  static async getDocument(roomId: string, language: string): Promise<YDoc> {
+    const docKey = `${roomId}:${language}`;
 
-  return userData;
-}
+    // If already in memory, return that instance
+    if (this.documents.has(docKey)) {
+      return this.documents.get(docKey)!;
+    }
 
-// Get or create a document for a room with specific language
-async function getDocument(roomId: string, language: string): Promise<any> {
-  const docKey = `${roomId}:${language}`;
+    // Create a new doc
+    const doc = new Y.Doc() as YDoc;
 
-  // If already in memory, return that instance
-  if (documentsInMemory.has(docKey)) {
-    return documentsInMemory.get(docKey)!;
+    // Try to load from Redis cache
+    const cachedState = await getDocumentFromCache(docKey);
+    if (cachedState) {
+      Y.applyUpdate(doc, cachedState);
+      console.log(`Loaded document for ${docKey} from cache`);
+    } else {
+      console.log(`Created new document for ${docKey}`);
+    }
+
+    // Store in memory
+    this.documents.set(docKey, doc);
+    return doc;
   }
 
-  // Create a new Yjs document
-  const doc = new Y.Doc();
-
-  // Try to load from Redis cache
-  const cachedState = await getDocumentFromCache(docKey);
-  if (cachedState) {
-    Y.applyUpdate(doc, cachedState);
-    console.log(`Loaded document for ${docKey} from cache`);
-  } else {
-    console.log(
-      `Created new document for room: ${roomId} with language: ${language}`,
-    );
+  static async saveDocument(docKey: string, doc: YDoc): Promise<void> {
+    try {
+      const stateAsUpdate = Y.encodeStateAsUpdate(doc);
+      await cacheDocumentState(docKey, stateAsUpdate);
+    } catch (err) {
+      console.error(`Failed to save document ${docKey}:`, err);
+    }
   }
 
-  // Store in memory
-  documentsInMemory.set(docKey, doc);
+  static scheduleCleanup(docKey: string): void {
+    // Clear any existing cleanup timer
+    const existingTimer = this.cleanupTimers.get(docKey);
+    if (existingTimer) {
+      clearTimeout(existingTimer);
+    }
 
-  return doc;
+    // Schedule new cleanup
+    const timer = setTimeout(async () => {
+      const doc = this.documents.get(docKey);
+      if (doc) {
+        await this.saveDocument(docKey, doc);
+        this.documents.delete(docKey);
+        this.cleanupTimers.delete(docKey);
+        console.log(`Cleaned up document ${docKey}`);
+      }
+    }, this.CLEANUP_DELAY);
+
+    this.cleanupTimers.set(docKey, timer);
+  }
+
+  static async setupRoomSubscription(
+    roomId: string,
+    namespace: Server | Socket,
+  ) {
+    // Check if we're already subscribed
+    if (this.subscriptions.has(roomId)) {
+      return;
+    }
+
+    await RedisPubSubService.subscribe(roomId, (message) => {
+      const { eventType, payload, excludeSocketId } = message;
+
+      try {
+        const target = namespace instanceof Server ? namespace : namespace.nsp;
+
+        switch (eventType) {
+          case "update": {
+            if (payload.update) {
+              const binaryUpdate = Buffer.from(payload.update, "base64");
+              if (excludeSocketId) {
+                target
+                  .to(roomId)
+                  .except(excludeSocketId)
+                  .emit("update", binaryUpdate);
+              }
+            }
+            break;
+          }
+
+          case "awareness":
+            if (excludeSocketId) {
+              target
+                .to(roomId)
+                .except(excludeSocketId)
+                .emit("awareness", payload);
+            }
+            break;
+
+          case "user_joined":
+          case "user_left":
+          case "chat-message":
+            target.to(roomId).emit(eventType.replace("_", "-"), payload);
+            break;
+
+          default:
+            if (excludeSocketId) {
+              target
+                .to(roomId)
+                .except(excludeSocketId)
+                .emit(eventType, payload);
+            } else {
+              target.to(roomId).emit(eventType, payload);
+            }
+        }
+      } catch (err) {
+        console.error(`Error handling ${eventType} event:`, err);
+      }
+    });
+
+    this.subscriptions.set(roomId, true);
+    console.log(`Room subscription setup for ${roomId}`);
+  }
 }
 
-// Store for room channel subscriptions - key is roomId
-const channelSubscriptions = new Map<string, any>();
+// Simple implementation to handle document updates
+function setupWSConnection(socket: Socket, doc: YDoc) {
+  // Listen for document updates
+  socket.on("update", (update: string | Uint8Array) => {
+    try {
+      // Convert update to Uint8Array if it's a base64 string
+      const binaryUpdate =
+        typeof update === "string" ? Buffer.from(update, "base64") : update;
 
+      // Apply update to the document
+      Y.applyUpdate(doc, binaryUpdate);
+
+      // Convert update back to base64 for Redis storage
+      const base64Update = Buffer.from(binaryUpdate).toString("base64");
+
+      // Publish to Redis for broadcasting to all clients (except sender)
+      RedisPubSubService.publish(
+        socket.data.roomId,
+        "update",
+        {
+          update: base64Update,
+        },
+        socket.id,
+      );
+
+      // Cache document state in Redis
+      const stateAsUpdate = Y.encodeStateAsUpdate(doc);
+      cacheDocumentState(socket.data.roomId, stateAsUpdate);
+    } catch (err) {
+      console.error("Error applying update:", err);
+      // Send error back to client
+      socket.emit("error", {
+        type: "update_error",
+        message: "Failed to apply update",
+      });
+    }
+  });
+
+  // Request for full sync
+  socket.on("request-sync", async () => {
+    try {
+      // Get latest state
+      const state = Y.encodeStateAsUpdate(doc);
+      // Convert to base64 for transmission
+      const base64State = Buffer.from(state).toString("base64");
+      // Send sync state to requesting client
+      socket.emit("sync", base64State);
+    } catch (err) {
+      console.error("Error handling sync request:", err);
+      socket.emit("error", {
+        type: "sync_error",
+        message: "Failed to sync document state",
+      });
+    }
+  });
+
+  // Initial sync when client connects
+  try {
+    const state = Y.encodeStateAsUpdate(doc);
+    const base64State = Buffer.from(state).toString("base64");
+    socket.emit("sync", base64State);
+  } catch (err) {
+    console.error("Error sending initial sync:", err);
+  }
+
+  // Listen for awareness updates (cursor movements)
+  socket.on("awareness", async (awarenessState: AwarenessUpdate) => {
+    if (!socket.data.roomId) return;
+
+    try {
+      // Add the username and color to the awareness state from user data in Redis
+      const userData = await getActiveUserData(socket.data.roomId, socket.id);
+
+      // Enrich awareness data with user info
+      const enrichedState: AwarenessUpdate = {
+        ...awarenessState,
+        clientId: socket.id,
+        username: awarenessState.username || userData?.username || "Anonymous",
+        color: awarenessState.color || userData?.color || "#ffcc00",
+        timestamp: Date.now(),
+      };
+
+      // Log for debugging
+      console.log(`Awareness update from ${socket.id}:`, enrichedState);
+
+      // Publish awareness update to Redis for all other users
+      RedisPubSubService.publish(
+        socket.data.roomId,
+        "awareness",
+        enrichedState,
+        socket.id,
+      );
+    } catch (err) {
+      console.error("Error handling awareness update:", err);
+    }
+  });
+}
+
+// Socket server setup
 export function setupSocketServer(httpServer: HttpServer) {
   const io = new Server(httpServer, {
     cors: {
-      origin: "*", // In production, restrict to your app's domain
+      origin: "*", // TODO: Restrict in production
       methods: ["GET", "POST"],
     },
-    // Add Socket.IO settings to improve connection stability
     connectionStateRecovery: {
-      // the backup duration of the sessions and the packets
       maxDisconnectionDuration: 2 * 60 * 1000,
-      // whether to skip middlewares upon successful recovery
       skipMiddlewares: true,
     },
   });
@@ -271,294 +400,191 @@ export function setupSocketServer(httpServer: HttpServer) {
     next();
   });
 
-  // Room namespace
+  // Room namespace.
   const roomNamespace = io.of("/rooms");
 
-  // Setup Redis pub/sub listener for broadcasting messages
-  const setupRoomSubscription = async (roomId: string) => {
-    // Check if we're already subscribed to this room
-    if (channelSubscriptions.has(roomId)) {
-      return;
-    }
+  // Setup room handlers
+  roomNamespace.on("connection", async (socket) => {
+    console.log(`Room connection: ${socket.id}`);
+    let currentDoc: YDoc | null = null;
 
-    // Create new subscription for this room
-    await RedisPubSubService.subscribe(roomId, (message) => {
-      const { eventType, payload, excludeSocketId } = message;
+    // Join room handler
+    socket.on("join-room", async (roomId: string, username: string) => {
+      try {
+        socket.join(roomId);
+        socket.data.roomId = roomId;
 
-      // Determine how to handle different event types
-      switch (eventType) {
-        case "update":
-          // Handle code updates
-          if (payload.update) {
-            try {
-              const binaryUpdate = Buffer.from(payload.update, "base64");
-              // Broadcast to all clients in room except the sender
-              if (excludeSocketId) {
-                roomNamespace
-                  .to(roomId)
-                  .except(excludeSocketId)
-                  .emit("update", binaryUpdate);
+        // Add user to room tracking
+        const userData = await addUserToRoom(roomId, socket.id, username);
+
+        // Setup subscriptions for this room
+        await RedisPubSubService.subscribe(roomId, (message) => {
+          const { eventType, payload, excludeSocketId } = message;
+
+          try {
+            switch (eventType) {
+              case "update": {
+                if (payload.update && excludeSocketId !== socket.id) {
+                  const binaryUpdate = Buffer.from(payload.update, "base64");
+                  socket.emit("update", binaryUpdate);
+                }
+                break;
               }
-            } catch (err) {
-              console.error("Error handling update:", err);
+
+              case "awareness":
+                if (excludeSocketId !== socket.id) {
+                  socket.emit("awareness", payload);
+                }
+                break;
+
+              case "user_joined":
+              case "user_left":
+              case "chat-message":
+                socket.emit(eventType.replace("_", "-"), payload);
+                break;
+
+              default:
+                if (excludeSocketId !== socket.id) {
+                  socket.emit(eventType, payload);
+                }
             }
+          } catch (err) {
+            console.error(`Error handling ${eventType} event:`, err);
           }
-          break;
+        });
 
-        case "awareness":
-          // Handle cursor movements/awareness
-          if (excludeSocketId) {
-            // Send awareness updates to all clients except sender
-            roomNamespace
-              .to(roomId)
-              .except(excludeSocketId)
-              .emit("awareness", payload);
-
-            // Also send as remote-cursor event for backward compatibility
-            if (payload.cursor) {
-              roomNamespace
-                .to(roomId)
-                .except(excludeSocketId)
-                .emit("remote-cursor", {
-                  id: payload.clientId,
-                  username: payload.username,
-                  color: payload.color,
-                  position: payload.cursor,
-                });
-            }
-          }
-          break;
-
-        case "user_joined":
-          // Handle user joined notification
-          roomNamespace.to(roomId).emit("user-joined", payload);
-          break;
-
-        case "user_left":
-          // Handle user left notification
-          roomNamespace.to(roomId).emit("user-left", payload);
-          break;
-
-        case "chat-message":
-          // Handle chat messages
-          roomNamespace.to(roomId).emit("chat-message", payload);
-          break;
-
-        default:
-          // Forward any other events as-is
-          if (excludeSocketId) {
-            roomNamespace
-              .to(roomId)
-              .except(excludeSocketId)
-              .emit(eventType, payload);
-          } else {
-            roomNamespace.to(roomId).emit(eventType, payload);
-          }
+        // Notify others of join
+        await RedisPubSubService.publish(roomId, "user_joined", {
+          id: socket.id,
+          username: userData.username,
+          color: userData.color,
+        });
+      } catch (err) {
+        console.error("Error joining room:", err);
+        socket.emit("error", {
+          type: "join_error",
+          message: "Failed to join room",
+        });
       }
     });
 
-    channelSubscriptions.set(roomId, true);
-    console.log(`Room subscription setup for ${roomId}`);
-  };
-
-  roomNamespace.on("connection", (socket) => {
-    console.log(`Room connection: ${socket.id}`);
-
-    // Track which room this socket is in
-    let currentRoomId: string | null = null;
-
-    // Join a room
-    socket.on("join-room", async (roomId: string, username: string) => {
-      socket.join(roomId);
-      currentRoomId = roomId;
-      socket.data.roomId = roomId;
-
-      // Ensure we have a Redis subscription for this room
-      await setupRoomSubscription(roomId);
-
-      // Add user to room tracking using Redis
-      const userData = await addUserToRoom(roomId, socket.id, username);
-
-      // Notify others in the room via Redis pub/sub
-      await RedisPubSubService.publish(roomId, "user_joined", {
-        id: socket.id,
-        username,
-        color: userData.color,
-        timestamp: new Date().toISOString(),
-      });
-
-      console.log(`User ${username} (${socket.id}) joined room: ${roomId}`);
-
-      // Send the list of users to the new user from Redis
-      const users = await RedisPresenceService.getUsers(roomId);
-      socket.emit("room-users", users);
-
-      // Also broadcast updated user list to all clients in the room
-      roomNamespace.to(roomId).emit("user-list-updated", users);
-    });
-
-    // Leave room
-    socket.on("leave-room", (roomId: string) => {
-      handleLeaveRoom(socket, roomId);
-    });
-
-    // Function to handle leaving a room
-    const handleLeaveRoom = async (socket: any, roomId: string) => {
+    // Document update handler
+    socket.on("update", async (update: string | Uint8Array) => {
+      const roomId = socket.data.roomId;
       if (!roomId) return;
 
-      // Get user info before removing
-      const users = await RedisPresenceService.getUsers(roomId);
-      const user = users.find((u) => u.id === socket.id);
-
-      if (user) {
-        // Remove from Redis
-        const isEmpty = await RedisPresenceService.removeUser(
+      try {
+        // Get or create document
+        currentDoc = await DocumentManager.getDocument(
           roomId,
+          socket.data.language || "javascript",
+        );
+
+        // Apply update
+        const binaryUpdate =
+          typeof update === "string" ? Buffer.from(update, "base64") : update;
+
+        Y.applyUpdate(currentDoc, binaryUpdate);
+
+        // Broadcast to others
+        const base64Update = Buffer.from(binaryUpdate).toString("base64");
+        await RedisPubSubService.publish(
+          roomId,
+          "update",
+          {
+            update: base64Update,
+          },
           socket.id,
         );
 
-        // Notify other users via Redis
-        await RedisPubSubService.publish(roomId, "user_left", {
-          id: socket.id,
-          username: user.username,
-          timestamp: new Date().toISOString(),
+        // Cache state
+        await DocumentManager.saveDocument(
+          `${roomId}:${socket.data.language}`,
+          currentDoc,
+        );
+      } catch (err) {
+        console.error("Error handling update:", err);
+        socket.emit("error", {
+          type: "update_error",
+          message: "Failed to apply update",
         });
-
-        // If room is now empty, unsubscribe from Redis channel
-        if (isEmpty && channelSubscriptions.has(roomId)) {
-          await RedisPubSubService.unsubscribe(roomId);
-          channelSubscriptions.delete(roomId);
-        }
       }
+    });
 
-      // Leave the Socket.IO room
-      socket.leave(roomId);
+    // Sync request handler
+    socket.on("request-sync", async () => {
+      const roomId = socket.data.roomId;
+      if (!roomId) return;
 
-      if (socket.data.roomId === roomId) {
-        socket.data.roomId = null;
-        currentRoomId = null;
+      try {
+        currentDoc = await DocumentManager.getDocument(
+          roomId,
+          socket.data.language || "javascript",
+        );
+        const state = Y.encodeStateAsUpdate(currentDoc);
+        const base64State = Buffer.from(state).toString("base64");
+        socket.emit("sync", base64State);
+      } catch (err) {
+        console.error("Error handling sync request:", err);
+        socket.emit("error", {
+          type: "sync_error",
+          message: "Failed to sync document state",
+        });
       }
+    });
 
-      console.log(`User ${socket.id} left room: ${roomId}`);
-    };
+    // Awareness update handler
+    socket.on("awareness", async (awarenessState: AwarenessUpdate) => {
+      const roomId = socket.data.roomId;
+      if (!roomId) return;
 
-    // Handle code editing
-    socket.on(
-      "code-edit",
-      async (roomId: string, language: string, operation: any) => {
-        // Validate input
-        if (!roomId || !language) return;
+      try {
+        const userData = await getActiveUserData(roomId, socket.id);
+        if (!userData) return;
 
-        // Handle different types of operations
-        if (operation.type === "update" && operation.update) {
-          try {
-            // Get current document
-            const doc = await getDocument(roomId, language);
+        const enrichedState: AwarenessUpdate = {
+          ...awarenessState,
+          clientId: socket.id,
+          username: awarenessState.username || userData.username,
+          color: awarenessState.color || userData.color,
+          timestamp: Date.now(),
+        };
 
-            // Apply the update to the document
-            const binaryUpdate = Buffer.from(operation.update, "base64");
-            Y.applyUpdate(doc, binaryUpdate);
+        await RedisPubSubService.publish(
+          roomId,
+          "awareness",
+          enrichedState,
+          socket.id,
+        );
+      } catch (err) {
+        console.error("Error handling awareness update:", err);
+      }
+    });
 
-            // Broadcast to other clients via Redis
-            RedisPubSubService.publish(
-              roomId,
-              "update",
-              {
-                update: operation.update,
-              },
-              socket.id,
-            );
+    // Disconnection handler
+    socket.on("disconnecting", async () => {
+      const roomId = socket.data.roomId;
+      if (!roomId) return;
 
-            // Cache document state
-            const stateAsUpdate = Y.encodeStateAsUpdate(doc);
-            await cacheDocumentState(`${roomId}:${language}`, stateAsUpdate);
-          } catch (err) {
-            console.error("Error handling code update:", err);
-          }
-        } else if (operation.type === "content" && operation.content) {
-          try {
-            // Get document
-            const doc = await getDocument(roomId, language);
-
-            // Set content in the document
-            const yText = doc.getText("monaco");
-            yText.delete(0, yText.length);
-            yText.insert(0, operation.content);
-
-            // Cache and broadcast
-            const stateAsUpdate = Y.encodeStateAsUpdate(doc);
-            await cacheDocumentState(`${roomId}:${language}`, stateAsUpdate);
-
-            // Broadcast update
-            RedisPubSubService.publish(
-              roomId,
-              "update",
-              {
-                update: Buffer.from(stateAsUpdate).toString("base64"),
-              },
-              socket.id,
-            );
-          } catch (err) {
-            console.error("Error handling content change:", err);
-          }
-        } else if (operation.type === "language-change") {
-          // Notify others about language change
-          RedisPubSubService.publish(
-            roomId,
-            "language-changed",
-            {
-              language,
-            },
-            socket.id,
+      try {
+        // Save current document state if needed
+        if (currentDoc) {
+          await DocumentManager.saveDocument(
+            `${roomId}:${socket.data.language}`,
+            currentDoc,
           );
         }
-      },
-    );
 
-    // Create or join a code editor session
-    socket.on("join-editor", async (roomId: string, language: string) => {
-      if (!roomId || !language) return;
-
-      socket.data.roomId = roomId;
-      socket.data.language = language;
-
-      // Get document for this room/language
-      const doc = await getDocument(roomId, language);
-
-      // Set up WebSocket connection for Yjs
-      setupWSConnection(socket, doc);
-
-      console.log(
-        `User ${socket.id} joined editor in room ${roomId} with language ${language}`,
-      );
-    });
-
-    // Chat message
-    socket.on("chat-message", (roomId: string, message: any) => {
-      if (!roomId || !message) return;
-
-      // Publish chat message through Redis
-      RedisPubSubService.publish(roomId, "chat-message", message);
-    });
-
-    // Disconnect handler
-    socket.on("disconnect", async () => {
-      console.log(`Socket disconnected: ${socket.id}`);
-
-      // Use Redis presence service to handle disconnection
-      const emptyRooms = await RedisPresenceService.handleDisconnect(socket.id);
-
-      // Cleanup Redis channel subscriptions for empty rooms
-      for (const roomId of emptyRooms) {
-        if (channelSubscriptions.has(roomId)) {
-          await RedisPubSubService.unsubscribe(roomId);
-          channelSubscriptions.delete(roomId);
+        const userData = await getActiveUserData(roomId, socket.id);
+        if (userData) {
+          await RedisPubSubService.publish(roomId, "user_left", {
+            id: socket.id,
+            username: userData.username,
+            color: userData.color,
+          });
         }
-      }
-
-      // If socket was in a room, handle leaving
-      if (currentRoomId) {
-        await handleLeaveRoom(socket, currentRoomId);
+      } catch (err) {
+        console.error("Error handling disconnection:", err);
       }
     });
   });

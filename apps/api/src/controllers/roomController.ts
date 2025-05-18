@@ -3,13 +3,12 @@ import Room, { IRoom } from "../models/Room.js";
 import { validationResult } from "express-validator";
 import { RedisMetadataService } from "../services/redisService.js";
 import mongoose from "mongoose";
-
+import { redisClient } from "index.js";
+import { v4 as uuidv4 } from "uuid";
 // Get all rooms
 export const getRooms = async (req: Request, res: Response) => {
   try {
-    const rooms = await Room.find({ isPrivate: false })
-      .select("-password")
-      .sort({ createdAt: -1 });
+    const rooms = await Room.find().select("-password").sort({ createdAt: -1 });
     res.json(rooms);
   } catch (error) {
     console.error("Error fetching rooms:", error);
@@ -26,34 +25,36 @@ export const getRoomById = async (req: Request, res: Response) => {
       return res.status(400).json({ message: "Room ID is required" });
     }
 
-    // Try to get room metadata from Redis cache first
-    const cachedMetadata = await RedisMetadataService.getMetadata(roomId);
+    // // Try to get room metadata from Redis cache first
+    // const cachedMetadata = await RedisMetadataService.getMetadata(roomId);
 
-    if (cachedMetadata) {
-      console.log(`Retrieved room metadata from cache for ${roomId}`);
-      return res.json(cachedMetadata);
-    }
+    // if (cachedMetadata) {
+    //   console.log(`Retrieved room metadata from cache for ${roomId}`);
+    //   return res.json(cachedMetadata);
+    // }
 
     // If not in cache, get from MongoDB
-    const room = await Room.findById(roomId).select("-password");
+    const room = await Room.find({ roomId: roomId }).select(
+      "-password -_id -__v",
+    );
     if (!room) {
       return res.status(404).json({ message: "Room not found" });
     }
 
     // Cache the room metadata for future requests
-    const metadata = {
-      _id: room._id.toString(),
-      name: room.name,
-      language: room.language,
-      isPrivate: room.isPrivate,
-      createdBy: room.createdBy,
-      createdAt: room.createdAt.toISOString(),
-      updatedAt: room.updatedAt.toISOString(),
-    };
+    // const metadata = {
+    //   roomId: room.id.toString(),
+    //   roomName: room.roomName,
+    //   language: room.language,
+    //   isPrivate: room.isPrivate,
+    //   createdBy: room.createdBy,
+    //   createdAt: room.createdAt.toISOString(),
+    //   updatedAt: room.updatedAt.toISOString(),
+    // };
 
-    await RedisMetadataService.cacheMetadata(roomId, metadata);
+    // await RedisMetadataService.cacheMetadata(roomId, metadata);
 
-    res.json(room);
+    res.json(room[0]);
   } catch (error) {
     console.error("Error fetching room:", error);
     res.status(500).json({ message: "Error fetching room" });
@@ -61,46 +62,65 @@ export const getRoomById = async (req: Request, res: Response) => {
 };
 
 // Create a new room
-export const createRoom = async (req: Request, res: Response) => {
+export const createRoom = async (req: any, res: any) => {
   try {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return res.status(400).json({ errors: errors.array() });
-    }
-    const { name, language, isPrivate, password } = req.body;
+    const { roomName, language, isPrivate, password } = req.body;
 
-    const createdBy = req.user?.id;
-    if (!createdBy) {
-      return res.status(401).json({ message: "Unauthorized" });
-    }
+    // Generate a unique ID for the room
+    const roomId = uuidv4();
+    const timestamp = new Date().toISOString();
 
     const room = new Room({
-      name,
-      createdBy,
-      language: language || "javascript",
+      roomId,
+      roomName,
+      createdBy: req.user.id,
+      language,
       isPrivate,
-      password: isPrivate ? password : undefined,
+      password: password || null,
+      createdAt: timestamp,
+      updatedAt: timestamp,
     });
 
     await room.save();
+    // Create room data object
+    const redisKey = `room:${roomId}:info`;
 
-    // Cache the new room's metadata
-    const metadata = {
-      _id: room._id.toString(),
-      name: room.name,
+    const redisRoomData = {
+      roomId,
+      roomName: room.roomName,
       language: room.language,
-      isPrivate: room.isPrivate,
-      createdBy: room.createdBy,
-      createdAt: room.createdAt.toISOString(),
-      updatedAt: room.updatedAt.toISOString(),
+      isPrivate: String(room.isPrivate),
+      password: room.password ?? "", // Ensures null becomes empty string
+      createdAt: String(room.createdAt),
+      updatedAt: String(room.updatedAt),
     };
 
-    await RedisMetadataService.cacheMetadata(room._id.toString(), metadata);
+    await redisClient.hSet(redisKey, redisRoomData);
 
-    res.status(201).json(room);
+    // Set expiration for room data (1 day)
+    await redisClient.expire(`room:${roomId}:info`, 86400);
+
+    // Add to list of rooms
+    await redisClient.zAdd("rooms", {
+      score: Date.now(),
+      value: roomId,
+    });
+
+    console.log(`Room created: ${roomId} (${roomName})`);
+
+    // Return room info (excluding password)
+    return res.status(201).json({
+      roomId,
+      roomName,
+      username: req.user.username,
+      createdBy: room.createdBy,
+      language,
+      isPrivate,
+      createdAt: room.createdAt,
+    });
   } catch (error) {
     console.error("Error creating room:", error);
-    res.status(500).json({ message: "Error creating room" });
+    return res.status(500).json({ error: "Failed to create room" });
   }
 };
 
@@ -118,7 +138,7 @@ export const updateRoom = async (req: Request, res: Response) => {
       return res.status(400).json({ message: "Room ID is required" });
     }
 
-    const { name, language, isPrivate, password } = req.body;
+    const { roomName, language, isPrivate, password } = req.body;
     const room = await Room.findById(roomId);
 
     if (!room) {
@@ -131,7 +151,7 @@ export const updateRoom = async (req: Request, res: Response) => {
         .json({ message: "Not authorized to update this room" });
     }
 
-    room.name = name || room.name;
+    room.roomName = roomName || room.roomName;
     room.language = language || room.language;
     room.isPrivate = isPrivate !== undefined ? isPrivate : room.isPrivate;
     if (isPrivate && password) {
@@ -143,7 +163,7 @@ export const updateRoom = async (req: Request, res: Response) => {
     // Update the metadata in Redis cache
     const metadata = {
       _id: room._id.toString(),
-      name: room.name,
+      name: room.roomName,
       language: room.language,
       isPrivate: room.isPrivate,
       createdBy: room.createdBy,
@@ -245,7 +265,7 @@ export const joinRoom = async (req: Request, res: Response) => {
       // Cache the room metadata for future requests
       const metadata = {
         _id: room._id.toString(),
-        name: room.name,
+        name: room.roomName,
         language: room.language,
         isPrivate: room.isPrivate,
         createdBy: room.createdBy,

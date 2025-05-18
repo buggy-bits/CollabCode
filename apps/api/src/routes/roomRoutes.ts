@@ -15,8 +15,25 @@ import {
   languageValidation,
 } from "../middleware/roomValidation.js";
 import { auth } from "../middleware/auth.js";
+import { v4 as uuidv4 } from "uuid";
+import { z } from "zod";
+import { redisClient } from "../index.js";
+import { validateBody } from "middleware/validateBody.js";
 
 const router = express.Router();
+
+// Validation schema for room creation
+const createRoomSchema = z.object({
+  roomName: z.string().min(1, "Room name is required"),
+  language: z.string().default("javascript"),
+  isPrivate: z.boolean().default(false),
+  password: z.string().optional(),
+});
+
+// Validation schema for updating room language
+const updateLanguageSchema = z.object({
+  language: z.string().min(1, "Language is required"),
+});
 
 // GET /api/rooms - Get all rooms
 router.get("/", getRooms);
@@ -25,7 +42,7 @@ router.get("/", getRooms);
 router.get("/:id", getRoomById);
 
 // POST /api/rooms - Create a new room
-router.post("/", auth, createRoomValidation, createRoom);
+router.post("/", auth, validateBody(createRoomSchema), createRoom);
 
 // PUT /api/rooms/:id - Update a room
 router.put("/:id", auth, updateRoomValidation, updateRoom);
@@ -37,6 +54,79 @@ router.delete("/:id", auth, deleteRoom);
 router.post("/:id/join", joinRoomValidation, joinRoom);
 
 // PATCH /api/rooms/:id/language - Update room language
-router.patch("/:id/language", languageValidation, updateLanguage);
+router.patch(
+  "/:id/language",
+  languageValidation,
+  async (req: any, res: any) => {
+    try {
+      const roomId = req.params.id;
+
+      // Validate request body
+      const validation = updateLanguageSchema.safeParse(req.body);
+
+      if (!validation.success) {
+        return res.status(400).json({
+          error: "Invalid input",
+          details: validation.error.format(),
+        });
+      }
+
+      const { language } = validation.data;
+
+      // Check if room exists
+      const exists = await redisClient.exists(`room:${roomId}:info`);
+
+      if (!exists) {
+        return res.status(404).json({ error: "Room not found" });
+      }
+
+      // Update room language
+      await redisClient.hSet(`room:${roomId}:info`, {
+        language,
+        updatedAt: new Date().toISOString(),
+      });
+
+      console.log(`Room language updated: ${roomId} -> ${language}`);
+
+      return res.json({
+        id: roomId,
+        language,
+      });
+    } catch (error) {
+      console.error("Error updating room language:", error);
+      return res.status(500).json({ error: "Failed to update room language" });
+    }
+  },
+);
+
+// Route to get a list of public rooms
+router.get("/", async (req: any, res: any) => {
+  try {
+    // Get room IDs from Redis (most recent first, limit 20)
+    const roomIds = await redisClient.zRange("rooms", 0, 19, { REV: true });
+
+    const rooms = [];
+
+    // Get room data for each ID
+    for (const roomId of roomIds) {
+      const roomData = await redisClient.hGetAll(`room:${roomId}:info`);
+
+      // Only include public rooms
+      if (roomData && roomData.isPrivate !== "true") {
+        rooms.push({
+          id: roomId,
+          name: roomData.name,
+          language: roomData.language,
+          createdAt: roomData.createdAt,
+        });
+      }
+    }
+
+    return res.json(rooms);
+  } catch (error) {
+    console.error("Error listing rooms:", error);
+    return res.status(500).json({ error: "Failed to list rooms" });
+  }
+});
 
 export default router;

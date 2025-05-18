@@ -53,12 +53,8 @@ import {
   updateAwareness,
   onUpdate,
   onSync,
-  onAwareness,
-  onRemoteCursor,
-  onUserJoined,
-  onUserLeft,
-  onUserListUpdated,
-  onLanguageChanged,
+  AwarenessState,
+  setupPresenceListeners,
 } from "../services/socket";
 import {
   validateJson,
@@ -275,21 +271,23 @@ const SUPPORTED_LANGUAGES = [
 // Define a custom YjsProvider that works with our Socket.io implementation
 class SocketIOProvider {
   public awareness: Awareness;
+  public socket: ReturnType<typeof getSocket>;
   private roomId: string;
   private language: string;
   private doc: Y.Doc;
-  private socket: ReturnType<typeof getSocket>;
   private status: SocketStatus = "disconnected";
   private statusCallbacks: Array<(status: { status: string }) => void> = [];
   private typingTimeout: ReturnType<typeof setTimeout> | null = null;
   private lastTypingUpdate = 0;
   private readonly TYPING_THROTTLE = 1000; // 1 second between typing updates
+  private updateHandlers: Set<(update: Uint8Array, origin: unknown) => void>;
 
   constructor(roomId: string, language: string, doc: Y.Doc, username: string) {
     this.roomId = roomId;
     this.language = language;
     this.doc = doc;
     this.socket = getSocket();
+    this.updateHandlers = new Set();
 
     // Create awareness instance
     this.awareness = new Awareness(doc);
@@ -302,6 +300,201 @@ class SocketIOProvider {
 
     // Initialize socket connection
     this.connect();
+
+    // Set up periodic state sync to ensure consistency
+    this.setupPeriodicSync();
+  }
+
+  private setupPeriodicSync() {
+    // Periodically sync state with others to ensure consistency
+    setInterval(() => {
+      if (this.status === "connected") {
+        const state = Y.encodeStateAsUpdate(this.doc);
+        sendCodeEdit(this.roomId, this.language, {
+          type: "sync",
+          update: Buffer.from(state).toString("base64"),
+        });
+      }
+    }, 30000); // Sync every 30 seconds
+  }
+
+  private connect() {
+    if (!this.socket) {
+      console.error("Socket not initialized");
+      return;
+    }
+
+    this.updateStatus("connecting");
+
+    // Connect to editor in this room
+    joinEditor(this.roomId, this.language);
+
+    // Clean up existing listeners
+    this.socket.off("update");
+    this.socket.off("sync");
+    this.socket.off("awareness");
+
+    // Set up listeners
+    const updateHandler = (update: Uint8Array) => {
+      try {
+        Y.applyUpdate(this.doc, update, this);
+        this.updateStatus("connected");
+      } catch (err) {
+        console.error("Error applying update:", err);
+        // Request full sync on error
+        this.requestSync();
+      }
+    };
+
+    const syncHandler = (syncState: Uint8Array) => {
+      try {
+        Y.applyUpdate(this.doc, syncState, this);
+        this.updateStatus("connected");
+      } catch (err) {
+        console.error("Error applying sync state:", err);
+      }
+    };
+
+    // Listen for document updates
+    onUpdate(updateHandler);
+    onSync(syncHandler);
+    this.socket.on("awareness", (awarenessState: AwarenessState) => {
+      // Handle awareness state updates
+      this.handleAwarenessUpdate(awarenessState);
+    });
+
+    // Listen for document changes in Yjs document
+    const updateListener = (update: Uint8Array, origin: unknown) => {
+      // Only send update if it originated locally (not from received updates)
+      if (origin !== this) {
+        try {
+          const encodedUpdate = Buffer.from(update).toString("base64");
+          sendCodeEdit(this.roomId, this.language, {
+            type: "update",
+            update: encodedUpdate,
+          });
+
+          // Update typing indicator
+          this.updateTypingState(true);
+
+          // Notify update handlers
+          this.updateHandlers.forEach((handler) => handler(update, origin));
+        } catch (err) {
+          console.error("Error handling document update:", err);
+        }
+      }
+    };
+
+    this.doc.on("update", updateListener);
+
+    // Set up awareness
+    const awarenessUpdateHandler = ({
+      added,
+      updated,
+      removed,
+    }: {
+      added: number[];
+      updated: number[];
+      removed: number[];
+    }) => {
+      // Send local awareness state to server
+      const localState = this.awareness.getLocalState();
+      if (localState && this.socket) {
+        // Convert to the expected format for the socket service
+        const awarenessState: AwarenessState = {
+          clientId: this.socket.id,
+          user: localState.user,
+          cursor: localState.cursor,
+          selection: localState.selection,
+          isTyping: localState.isTyping as boolean,
+          scrollPosition: localState.scrollPosition,
+          username: localState.user?.name,
+          color: localState.user?.color,
+          timestamp: Date.now(),
+        };
+
+        updateAwareness(awarenessState);
+      }
+    };
+
+    this.awareness.on("update", awarenessUpdateHandler);
+
+    this.updateStatus("connected");
+  }
+
+  private handleAwarenessUpdate = (awarenessState: AwarenessState) => {
+    if (!awarenessState) return;
+
+    try {
+      // Update awareness states from other clients
+      if (
+        awarenessState.clientId &&
+        awarenessState.clientId !== this.socket?.id
+      ) {
+        const states = this.awareness.getStates();
+        const clientId = parseInt(awarenessState.clientId, 10) || 0;
+
+        // Create a valid state object
+        const state: Record<string, unknown> = {};
+
+        // Copy user data
+        if (awarenessState.user) {
+          state.user = {
+            name:
+              awarenessState.user.name ||
+              awarenessState.username ||
+              "Anonymous",
+            color:
+              awarenessState.user.color || awarenessState.color || "#ffcc00",
+          };
+        } else if (awarenessState.username) {
+          state.user = {
+            name: awarenessState.username,
+            color: awarenessState.color || "#ffcc00",
+          };
+        }
+
+        // Copy cursor data if available
+        if (awarenessState.cursor) {
+          state.cursor = awarenessState.cursor;
+        }
+
+        // Copy selection data if available
+        if (awarenessState.selection) {
+          state.selection = awarenessState.selection;
+        }
+
+        // Copy typing state
+        if (awarenessState.isTyping !== undefined) {
+          state.isTyping = awarenessState.isTyping;
+        }
+
+        // Copy scroll position
+        if (awarenessState.scrollPosition) {
+          state.scrollPosition = awarenessState.scrollPosition;
+        }
+
+        // Update the state in the awareness instance
+        states.set(clientId, state);
+
+        // Emit the update event (should be an array of updated client IDs)
+        this.awareness.emit("update", [clientId]);
+      }
+    } catch (err) {
+      console.error("Error handling awareness update:", err);
+    }
+  };
+
+  // Register update handler
+  public onUpdate(handler: (update: Uint8Array, origin: unknown) => void) {
+    this.updateHandlers.add(handler);
+  }
+
+  // Request a full sync from other clients
+  private requestSync() {
+    if (this.socket) {
+      this.socket.emit("request-sync", this.roomId, this.language);
+    }
   }
 
   private getRandomColor(): string {
@@ -325,164 +518,24 @@ class SocketIOProvider {
     return colors[Math.floor(Math.random() * colors.length)]!;
   }
 
-  private connect() {
-    if (!this.socket) {
-      console.error("Socket not initialized");
-      return;
-    }
-
-    this.updateStatus("connecting");
-
-    // Connect to editor in this room
-    joinEditor(this.roomId, this.language);
-
-    // Clean up existing listeners
-    this.socket.off("update");
-    this.socket.off("sync");
-    this.socket.off("awareness");
-
-    // Set up listeners
-    const updateHandler = (update: Uint8Array) => {
-      try {
-        Y.applyUpdate(this.doc, update);
-        this.updateStatus("connected");
-      } catch (err) {
-        console.error("Error applying update:", err);
-      }
-    };
-
-    const syncHandler = (syncState: Uint8Array) => {
-      try {
-        Y.applyUpdate(this.doc, syncState);
-        this.updateStatus("connected");
-      } catch (err) {
-        console.error("Error applying sync state:", err);
-      }
-    };
-
-    const awarenessHandler = (
-      awarenessState: Y.AwarenessStateMap & { clientId?: string },
-    ) => {
-      if (!awarenessState) return;
-
-      try {
-        // Update awareness states from other clients
-        if (
-          awarenessState.clientId &&
-          awarenessState.clientId !== this.socket?.id
-        ) {
-          const states = this.awareness.getStates();
-          const clientId = parseInt(awarenessState.clientId, 10) || 0;
-
-          const updatedState = {
-            user: {
-              name: awarenessState.user?.name || "Anonymous",
-              color: awarenessState.user?.color || "#ffcc00",
-            },
-            cursor: awarenessState.cursor,
-            selection: awarenessState.selection,
-            isTyping: awarenessState.isTyping,
-            scrollPosition: awarenessState.scrollPosition,
-          };
-
-          states.set(clientId, updatedState);
-
-          this.awareness.emit("update", {
-            added: [],
-            updated: [clientId],
-            removed: [],
-          });
-        }
-      } catch (err) {
-        console.error("Error handling awareness update:", err);
-      }
-    };
-
-    // Listen for document updates
-    onUpdate(updateHandler);
-    onSync(syncHandler);
-    onAwareness(awarenessHandler);
-
-    // Listen for document changes in Yjs document
-    const updateListener = (update: Uint8Array, origin: unknown) => {
-      // Only send update if it originated locally (not from received updates)
-      if (origin !== this) {
-        const encodedUpdate = Buffer.from(update).toString("base64");
-        sendCodeEdit(this.roomId, this.language, {
-          type: "update",
-          update: encodedUpdate,
-        });
-
-        // Update typing indicator
-        this.updateTypingState(true);
-      }
-    };
-
-    this.doc.on("update", updateListener);
-
-    // Set up awareness
-    const awarenessUpdateHandler = (changes: {
-      added: number[];
-      updated: number[];
-      removed: number[];
-    }) => {
-      // Send local awareness state to server
-      const localState = this.awareness.getLocalState();
-      if (localState && this.socket) {
-        updateAwareness({
-          clientId: this.socket.id,
-          username: localState.user?.name,
-          color: localState.user?.color,
-          cursor: localState.cursor,
-          selection: localState.selection,
-          isTyping: localState.isTyping,
-          scrollPosition: localState.scrollPosition,
-        });
-      }
-    };
-
-    this.awareness.on("update", awarenessUpdateHandler);
-
-    this.updateStatus("connected");
-  }
-
-  private updateTypingState(isTyping: boolean) {
-    // Throttle typing indicator updates
-    const now = Date.now();
-    if (now - this.lastTypingUpdate < this.TYPING_THROTTLE) {
-      return;
-    }
-
-    this.lastTypingUpdate = now;
-
-    // Set typing state in awareness
-    this.awareness.setLocalStateField("isTyping", isTyping);
-
-    // Clear previous timeout
-    if (this.typingTimeout) {
-      clearTimeout(this.typingTimeout);
-      this.typingTimeout = null;
-    }
-
-    // Set new timeout to clear typing state
-    if (isTyping) {
-      this.typingTimeout = setTimeout(() => {
-        this.awareness.setLocalStateField("isTyping", false);
-        this.typingTimeout = null;
-      }, 3000); // Stop typing indicator after 3 seconds of inactivity
-    }
-  }
-
-  public updateScrollPosition(scrollTop: number, scrollLeft: number) {
-    this.awareness.setLocalStateField("scrollPosition", {
-      scrollTop,
-      scrollLeft,
-    });
-  }
-
   private updateStatus(status: SocketStatus) {
     this.status = status;
     this.statusCallbacks.forEach((cb) => cb({ status }));
+  }
+
+  // Add updateTypingState method to manage typing awareness
+  public updateTypingState(isTyping: boolean) {
+    this.awareness.setLocalStateField("isTyping", isTyping);
+
+    // Optionally, clear typing state after a short delay
+    if (this.typingTimeout) {
+      clearTimeout(this.typingTimeout);
+    }
+    if (isTyping) {
+      this.typingTimeout = setTimeout(() => {
+        this.awareness.setLocalStateField("isTyping", false);
+      }, this.TYPING_THROTTLE);
+    }
   }
 
   public on(event: string, callback: (event: { status: string }) => void) {
@@ -501,8 +554,7 @@ class SocketIOProvider {
       const cleanupSync = onSync(() => {});
       cleanupSync();
 
-      const cleanupAwareness = onAwareness(() => {});
-      cleanupAwareness();
+      // Awareness cleanup is handled by this.awareness.destroy() below.
     }
 
     // Clear typing timeout
@@ -512,7 +564,12 @@ class SocketIOProvider {
     }
 
     // Remove update listeners
-    this.doc.off("update", null);
+    try {
+      this.doc.off("update", (update: Uint8Array, origin: any) => {});
+    } catch (err) {
+      console.error("Error removing update listener:", err);
+    }
+
     this.awareness.destroy();
     this.updateStatus("disconnected");
   }
@@ -545,7 +602,6 @@ const CodeEditor = ({
   ]);
   const [showSettingsDialog, setShowSettingsDialog] = useState(false);
   const [autoValidateJson, setAutoValidateJson] = useState(true);
-  const [syncScroll, setSyncScroll] = useState(true);
   const [toast, setToast] = useState<{
     open: boolean;
     message: string;
@@ -565,9 +621,6 @@ const CodeEditor = ({
   const previousLanguageRef = useRef<string>(initialLanguage);
   const contentRef = useRef<Record<string, string>>({});
   const remoteCursorManagerRef = useRef<RemoteCursorManager | null>(null);
-  const scrollSyncTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
-    null,
-  );
 
   // Show a small toast notification
   const showToast = useCallback(
@@ -637,7 +690,9 @@ const CodeEditor = ({
       } catch (err) {
         console.error("JSON validation error:", err);
         showToast(
-          `Invalid JSON: ${err instanceof Error ? err.message : "Unknown error"}`,
+          `Invalid JSON: ${
+            err instanceof Error ? err.message : "Unknown error"
+          }`,
           "error",
         );
       } finally {
@@ -699,7 +754,10 @@ const CodeEditor = ({
       }
 
       showToast(
-        `Language changed to ${SUPPORTED_LANGUAGES.find((l) => l.value === newLanguage)?.label || newLanguage}`,
+        `Language changed to ${
+          SUPPORTED_LANGUAGES.find((l) => l.value === newLanguage)?.label ||
+          newLanguage
+        }`,
         "success",
       );
     } catch (error) {
@@ -734,38 +792,6 @@ const CodeEditor = ({
     setShowSettingsDialog(!showSettingsDialog);
   };
 
-  // Handle scroll sync
-  const handleEditorScroll = useCallback(
-    (e: monaco.editor.IScrollEvent) => {
-      if (!syncScroll || !providerRef.current || !editorRef.current) return;
-
-      // Throttle scroll events to avoid overwhelming the network
-      if (scrollSyncTimeoutRef.current) {
-        clearTimeout(scrollSyncTimeoutRef.current);
-      }
-
-      scrollSyncTimeoutRef.current = setTimeout(() => {
-        const scrollTop = editorRef.current?.getScrollTop() || 0;
-        const scrollLeft = editorRef.current?.getScrollLeft() || 0;
-
-        providerRef.current?.updateScrollPosition(scrollTop, scrollLeft);
-      }, 100);
-    },
-    [syncScroll],
-  );
-
-  // Apply remotely synchronized scroll position
-  const applyRemoteScrollPosition = useCallback(
-    (scrollTop: number, scrollLeft: number) => {
-      if (!syncScroll || !editorRef.current) return;
-
-      // Apply the scroll position
-      editorRef.current.setScrollTop(scrollTop);
-      editorRef.current.setScrollLeft(scrollLeft);
-    },
-    [syncScroll],
-  );
-
   // Listen for user updates
   useEffect(() => {
     const socket = getSocket();
@@ -799,52 +825,57 @@ const CodeEditor = ({
     };
 
     // Remote cursor event handler
-    const remoteCursorHandler = (cursorData: {
-      id: string;
-      username: string;
-      color: string;
-      position: {
-        lineNumber: number;
-        column: number;
-      };
-    }) => {
-      if (
-        !editorRef.current ||
-        !monacoRef.current ||
-        !remoteCursorManagerRef.current
-      )
-        return;
+    // const remoteCursorHandler = (cursorData: {
+    //   id: string;
+    //   username: string;
+    //   color: string;
+    //   position: {
+    //     lineNumber: number;
+    //     column: number;
+    //   };
+    // }) => {
+    //   if (
+    //     !editorRef.current ||
+    //     !monacoRef.current ||
+    //     !remoteCursorManagerRef.current
+    //   )
+    //     return;
 
-      const { id, username, color, position } = cursorData;
+    //   const { id, username, color, position } = cursorData;
 
-      // Only handle if we have position data
-      if (!position || !position.lineNumber) return;
+    //   // Only handle if we have position data
+    //   if (!position || !position.lineNumber) return;
 
-      // Update the remote cursor
-      try {
-        remoteCursorManagerRef.current.addCursor(id, color, username);
-        remoteCursorManagerRef.current.setCursorPosition(id, position);
-      } catch (err) {
-        console.error("Error updating remote cursor:", err);
-      }
-    };
+    //   // Update the remote cursor
+    //   try {
+    //     remoteCursorManagerRef.current.addCursor(id, color, username);
+    //     remoteCursorManagerRef.current.setCursorPosition(id, position);
+    //   } catch (err) {
+    //     console.error("Error updating remote cursor:", err);
+    //   }
+    // };
 
     // Language changed handler
     const languageChangedHandler = (data: { language: string }) => {
       if (data.language !== language) {
         setLanguage(data.language);
         showToast(
-          `Language changed to ${SUPPORTED_LANGUAGES.find((l) => l.value === data.language)?.label || data.language}`,
+          `Language changed to ${
+            SUPPORTED_LANGUAGES.find((l) => l.value === data.language)?.label ||
+            data.language
+          }`,
           "info",
         );
       }
     };
+    const { onUserLeft, onUserJoined, onUserListUpdated, onLanguageChanged } =
+      setupPresenceListeners(socket);
 
     // Set up event listeners
     const userJoinedUnsubscribe = onUserJoined(userJoinedHandler);
     const userLeftUnsubscribe = onUserLeft(userLeftHandler);
     const userListUnsubscribe = onUserListUpdated(userListHandler);
-    const remoteCursorUnsubscribe = onRemoteCursor(remoteCursorHandler);
+    // Removed onRemoteCursor usage as it is not defined
     const languageChangedUnsubscribe = onLanguageChanged(
       languageChangedHandler,
     );
@@ -854,7 +885,7 @@ const CodeEditor = ({
       userJoinedUnsubscribe();
       userLeftUnsubscribe();
       userListUnsubscribe();
-      remoteCursorUnsubscribe();
+      // remoteCursorUnsubscribe();
       languageChangedUnsubscribe();
     };
   }, [language, showToast]);
@@ -878,18 +909,6 @@ const CodeEditor = ({
             color: state.user.color,
           });
         }
-
-        // Handle scroll sync
-        if (
-          clientId.toString() !== providerRef.current?.socket?.id &&
-          state.scrollPosition &&
-          syncScroll
-        ) {
-          applyRemoteScrollPosition(
-            state.scrollPosition.scrollTop,
-            state.scrollPosition.scrollLeft,
-          );
-        }
       });
 
       setTypingUsers(currentTypingUsers);
@@ -900,7 +919,7 @@ const CodeEditor = ({
     return () => {
       awareness.off("update", handleAwarenessUpdate);
     };
-  }, [syncScroll, applyRemoteScrollPosition]);
+  }, []);
 
   // Initialize Y.js and Monaco
   useEffect(() => {
@@ -920,7 +939,6 @@ const CodeEditor = ({
         bindingRef.current = null;
       }
       if (remoteCursorManagerRef.current) {
-        remoteCursorManagerRef.current.dispose();
         remoteCursorManagerRef.current = null;
       }
       setIsConnected(false);
@@ -958,11 +976,19 @@ const CodeEditor = ({
         // Only create binding if we have a valid model
         if (model) {
           // Set up remote cursor management
-          remoteCursorManagerRef.current = new RemoteCursorManager({
-            editor: editor,
-            tooltips: true,
-            tooltipDuration: 2000,
-          });
+          try {
+            // Initialize the RemoteCursorManager from monaco-collab-ext
+            const remoteCursorManager = new RemoteCursorManager({
+              editor: editor,
+              tooltips: true,
+              tooltipDuration: 2000,
+            });
+            remoteCursorManagerRef.current = remoteCursorManager;
+
+            console.log("Remote cursor manager initialized");
+          } catch (err) {
+            console.error("Error initializing remote cursor manager:", err);
+          }
 
           // Create Monaco binding
           bindingRef.current = new MonacoBinding(
@@ -1006,23 +1032,47 @@ const CodeEditor = ({
 
           // Track cursor position and selection
           editor.onDidChangeCursorPosition((e) => {
-            const position = e.position;
-            const selection = editor.getSelection();
+            try {
+              const position = e.position;
 
-            // Send to other clients
-            updateAwareness({
-              cursor: position,
-              selection: selection,
-            });
+              // Create cursor position compatible with our socket interface
+              const cursorPosition = {
+                lineNumber: position.lineNumber,
+                column: position.column,
+              };
 
-            // Update typing indicator
-            if (providerRef.current) {
-              (providerRef.current as SocketIOProvider).updateTypingState(true);
+              // Get selection if available
+              const selectionObj = editor.getSelection();
+              let selection;
+
+              if (selectionObj) {
+                selection = {
+                  startLineNumber: selectionObj.startLineNumber,
+                  startColumn: selectionObj.startColumn,
+                  endLineNumber: selectionObj.endLineNumber,
+                  endColumn: selectionObj.endColumn,
+                };
+              }
+
+              // Console log for debugging
+              console.log("Cursor position changed:", cursorPosition);
+
+              // Send awareness update
+              updateAwareness({
+                cursor: cursorPosition,
+                selection: selection,
+                clientId: providerRef.current?.socket?.id,
+                timestamp: Date.now(),
+              });
+
+              // Update typing indicator via provider's public method
+              if (providerRef.current) {
+                providerRef.current.updateTypingState(true);
+              }
+            } catch (err) {
+              console.error("Error handling cursor position change:", err);
             }
           });
-
-          // Track scroll position for sync
-          editor.onDidScrollChange(handleEditorScroll);
 
           // Validate JSON if needed
           if (language === "json" && autoValidateJson) {
@@ -1052,14 +1102,7 @@ const CodeEditor = ({
         }
       }
     },
-    [
-      language,
-      readOnly,
-      roomId,
-      validateJsonContent,
-      autoValidateJson,
-      handleEditorScroll,
-    ],
+    [language, readOnly, roomId, validateJsonContent, autoValidateJson],
   );
 
   // Update model markers when validation errors change
@@ -1323,16 +1366,6 @@ const CodeEditor = ({
                 label="Auto-validate JSON"
               />
             )}
-
-            <FormControlLabel
-              control={
-                <Switch
-                  checked={syncScroll}
-                  onChange={(e) => setSyncScroll(e.target.checked)}
-                />
-              }
-              label="Sync scrolling with collaborators"
-            />
 
             <FormControlLabel
               control={

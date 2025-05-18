@@ -1,7 +1,8 @@
 import mongoose, { Schema, Document } from "mongoose";
 
 export interface IRoom extends Document {
-  name: string;
+  roomId: string;
+  roomName: string;
   createdBy: string;
   language: string;
   isPrivate: boolean;
@@ -12,7 +13,12 @@ export interface IRoom extends Document {
 
 const RoomSchema = new Schema(
   {
-    name: {
+    roomId: {
+      type: String,
+      unique: true,
+      required: true,
+    },
+    roomName: {
       type: String,
       required: true,
       trim: true,

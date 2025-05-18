@@ -165,9 +165,12 @@ docker exec -it <container_name_or_id> mongosh
 ```
 
 For my case, container name is `collabcode-mongodb-1`
+Note: its authenticated from docker-compose file
+username: admin
+password: password
 
 ```bash
-docker exec -it collabcode-mongodb-1 mongosh
+docker exec -it collabcode-mongodb-1 mongosh -u admin -p password --authenticationDatabase admin
 ```
 
 For a visual interface, use MongoDB Compass
@@ -184,12 +187,15 @@ Step 1: Enter the Redis CLI
 docker exec -it <container_name_or_id> redis-cli
 ```
 
+For my case, container name is `collabcode-redis-1`
+
+```bash
+docker exec -it collabcode-redis-1 redis-cli
+```
+
 Use a GUI Tool (RedisInsight)
 For a visual interface, use RedisInsight (free GUI by Redis):
 
 ```
 
-## Test Change
-
-This is a small change to test the pre-commit hook.
 ```

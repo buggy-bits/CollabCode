@@ -19,6 +19,10 @@ export interface SelectionRange {
   endColumn: number;
 }
 
+/**
+ * Interface for awareness state updates
+ * This is used to track users, cursors, selections, typing indicators, and scroll positions
+ */
 export interface AwarenessState {
   user?: {
     name: string;
@@ -34,6 +38,7 @@ export interface AwarenessState {
   clientId?: string;
   username?: string;
   color?: string;
+  timestamp: number;
 }
 
 export interface ChatMessage {
@@ -50,69 +55,166 @@ export interface CodeOperation {
   content?: string;
 }
 
-// Socket.io instance for room management
-let roomSocket: Socket | null = null;
+// Connection state management
+class SocketManager {
+  private socket: Socket | null = null;
+  private lastReconnectAttempt = 0;
+  private needsSync = false;
+  private currentRoom: string | null = null;
+  private currentUsername: string | null = null;
 
-// Initialize sockets
-export const initializeSockets = () => {
-  const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3000";
+  get isConnected(): boolean {
+    return this.socket?.connected ?? false;
+  }
 
-  // Initialize room socket if not already initialized
-  if (!roomSocket) {
-    roomSocket = io(`${API_URL}/rooms`, {
-      autoConnect: true,
-      reconnection: true,
-      reconnectionAttempts: 10,
-      reconnectionDelay: 1000,
-      reconnectionDelayMax: 5000,
-      timeout: 20000,
-    });
+  initialize() {
+    const API_URL = import.meta.env.VITE_API_URL || "http://localhost:3000";
 
-    roomSocket.on("connect", () => {
-      console.log("Connected to room socket");
-    });
+    if (!this.socket) {
+      console.log("Initializing socket connection to:", `${API_URL}/rooms`);
 
-    roomSocket.on("disconnect", (reason) => {
-      console.log("Disconnected from room socket:", reason);
-      if (reason === "io server disconnect") {
-        // the disconnection was initiated by the server, reconnect manually
-        roomSocket?.connect();
+      this.socket = io(`${API_URL}/rooms`, {
+        autoConnect: true,
+        reconnection: true,
+        reconnectionAttempts: 10,
+        reconnectionDelay: 1000,
+        reconnectionDelayMax: 5000,
+        timeout: 20000,
+        transports: ["websocket", "polling"],
+      });
+
+      this.setupEventHandlers();
+    }
+
+    return this.socket;
+  }
+
+  private setupEventHandlers() {
+    if (!this.socket) return;
+
+    this.socket.on("connect", () => {
+      console.log("Connected to socket with ID:", this.socket?.id);
+
+      // If we were in a room before disconnecting, rejoin it
+      if (this.currentRoom && this.currentUsername) {
+        this.joinRoom(this.currentRoom, this.currentUsername);
+      }
+
+      if (this.needsSync) {
+        this.requestSync();
+        this.needsSync = false;
       }
     });
 
-    roomSocket.on("connect_error", (error) => {
-      console.error("Room socket connection error:", error);
+    this.socket.on("disconnect", (reason) => {
+      console.log("Disconnected from socket:", reason);
+      this.needsSync = true;
+
+      if (reason === "io server disconnect" || reason === "transport close") {
+        this.attemptReconnect();
+      }
+    });
+
+    this.socket.on("connect_error", (error) => {
+      console.error("Socket connection error:", error);
+      this.needsSync = true;
+      this.attemptReconnect();
     });
   }
 
-  return { roomSocket };
+  private attemptReconnect() {
+    if (!this.socket) return;
+
+    const now = Date.now();
+    const timeSinceLastAttempt = now - this.lastReconnectAttempt;
+    const attempts = this.socket.io?.reconnectionAttempts || 0;
+    const backoffDelay = Math.min(1000 * Math.pow(2, attempts), 10000);
+
+    if (timeSinceLastAttempt >= backoffDelay) {
+      this.lastReconnectAttempt = now;
+      this.socket.connect();
+    }
+  }
+
+  requestSync() {
+    if (!this.socket?.connected) {
+      this.needsSync = true;
+      return;
+    }
+
+    console.log("Requesting sync from server...");
+    this.socket.emit("request-sync");
+  }
+
+  joinRoom(roomId: string, username: string) {
+    if (!this.socket?.connected) {
+      throw new Error("Socket not connected");
+    }
+
+    this.currentRoom = roomId;
+    this.currentUsername = username;
+    this.socket.emit("join-room", roomId, username);
+  }
+
+  getSocket(): Socket | null {
+    return this.socket;
+  }
+
+  disconnect() {
+    this.currentRoom = null;
+    this.currentUsername = null;
+    this.socket?.disconnect();
+  }
+}
+
+// Create singleton instance
+const socketManager = new SocketManager();
+
+// Socket state tracking
+const pendingSync = false;
+const MAX_RECONNECT_DELAY = 10000; // 10 seconds
+
+// Socket.io instance for room management
+const roomSocket: Socket | null = null;
+
+/**
+ * Request a full sync from the server
+ * This is used after reconnection to ensure we have the latest state
+ */
+export const requestSync = () => {
+  if (!roomSocket?.connected) return;
+  console.log("Requesting sync from server...");
+  roomSocket.emit("request-sync");
+};
+
+// Initialize sockets
+export const initializeSockets = () => {
+  return socketManager.initialize();
 };
 
 // Join a room
 export const joinRoom = (roomId: string, username: string) => {
-  if (!roomSocket) {
-    throw new Error("Room socket not initialized");
-  }
-
-  roomSocket.emit("join-room", roomId, username);
+  socketManager.joinRoom(roomId, username);
 };
 
 // Leave a room
 export const leaveRoom = (roomId: string) => {
-  if (!roomSocket) {
-    throw new Error("Room socket not initialized");
+  const socket = socketManager.getSocket();
+  if (!socket) {
+    throw new Error("Socket not initialized");
   }
-
-  roomSocket.emit("leave-room", roomId);
+  console.log(`Leaving room ${roomId}`);
+  socket.emit("leave-room", roomId);
 };
 
 // Join editor in a room
 export const joinEditor = (roomId: string, language: string = "javascript") => {
-  if (!roomSocket) {
+  const socket = socketManager.getSocket();
+  if (!socket) {
     throw new Error("Socket not initialized");
   }
-
-  roomSocket.emit("join-editor", roomId, language);
+  console.log(`Joining editor in room ${roomId} with language ${language}`);
+  socket.emit("join-editor", roomId, language);
 };
 
 // Send text change operations
@@ -121,33 +223,58 @@ export const sendCodeEdit = (
   language: string,
   operation: CodeOperation,
 ) => {
-  if (!roomSocket) {
+  const socket = socketManager.getSocket();
+  if (!socket) {
     throw new Error("Socket not initialized");
   }
 
-  console.log("Sending code edit:", operation);
-  roomSocket.emit("code-edit", roomId, language, operation);
+  console.log("Sending code edit:", {
+    roomId,
+    language,
+    operationType: operation.type,
+    hasUpdate: !!operation.update,
+    hasContent: !!operation.content,
+  });
+
+  try {
+    const operationWithTimestamp = {
+      ...operation,
+      timestamp: Date.now(),
+    };
+
+    socket.emit("code-edit", roomId, language, operationWithTimestamp);
+  } catch (error) {
+    console.error("Error sending code edit:", error);
+    reconnectSockets();
+  }
 };
 
-// Send awareness updates (cursor, selection)
+// Update awareness (cursor, selection)
 export const updateAwareness = (awarenessState: AwarenessState) => {
-  if (!roomSocket) {
+  const socket = socketManager.getSocket();
+  if (!socket) {
     throw new Error("Socket not initialized");
   }
 
-  console.log("Sending awareness update:", awarenessState);
-  roomSocket.emit("awareness", awarenessState);
+  const awarenessUpdate = {
+    ...awarenessState,
+    clientId: awarenessState.clientId || socket.id,
+    timestamp: Date.now(),
+  };
+
+  console.log("Sending awareness update:", awarenessUpdate);
+  socket.emit("awareness", awarenessUpdate);
 };
 
 // Change room language
 export const changeLanguage = (roomId: string, language: string) => {
-  if (!roomSocket) {
+  const socket = socketManager.getSocket();
+  if (!socket) {
     throw new Error("Socket not initialized");
   }
 
   console.log("Changing language to:", language);
-  // Use code-edit to send language change notification
-  roomSocket.emit("code-edit", roomId, language, { type: "language-change" });
+  socket.emit("code-edit", roomId, language, { type: "language-change" });
 };
 
 // Update room language on server
@@ -176,174 +303,104 @@ export const updateRoomLanguage = async (roomId: string, language: string) => {
 
 // Send chat message
 export const sendChatMessage = (roomId: string, message: ChatMessage) => {
-  if (!roomSocket) {
+  const socket = socketManager.getSocket();
+  if (!socket) {
     throw new Error("Socket not initialized");
   }
 
-  roomSocket.emit("chat-message", roomId, message);
+  socket.emit("chat-message", roomId, message);
 };
 
 // Listen for editor updates
 export const onUpdate = (callback: (update: Uint8Array) => void) => {
-  if (!roomSocket) {
+  const socket = socketManager.getSocket();
+  if (!socket) {
     throw new Error("Socket not initialized");
   }
 
-  const handler = (update: Uint8Array) => {
+  const handler = (update: string | Uint8Array) => {
     console.log("Received update event");
-    callback(update);
+    const binaryUpdate =
+      typeof update === "string" ? Buffer.from(update, "base64") : update;
+    callback(binaryUpdate);
   };
 
-  roomSocket.on("update", handler);
-  return () => roomSocket?.off("update", handler);
+  socket.on("update", handler);
+  return () => {
+    socket?.off("update", handler);
+  };
 };
 
 // Listen for document sync
 export const onSync = (callback: (syncState: Uint8Array) => void) => {
-  if (!roomSocket) {
+  const socket = socketManager.getSocket();
+  if (!socket) {
     throw new Error("Socket not initialized");
   }
 
-  const handler = (syncState: Uint8Array) => {
+  const handler = (syncState: string | Uint8Array) => {
     console.log("Received sync event");
-    callback(syncState);
+    const binaryState =
+      typeof syncState === "string"
+        ? Buffer.from(syncState, "base64")
+        : syncState;
+    callback(binaryState);
   };
 
-  roomSocket.on("sync", handler);
-  return () => roomSocket?.off("sync", handler);
-};
-
-// Listen for awareness updates (cursor, selection)
-export const onAwareness = (
-  callback: (awarenessState: AwarenessState) => void,
-) => {
-  if (!roomSocket) {
-    throw new Error("Socket not initialized");
-  }
-
-  const handler = (awarenessState: AwarenessState) => {
-    console.log("Received awareness event:", awarenessState);
-    callback(awarenessState);
+  socket.on("sync", handler);
+  return () => {
+    socket?.off("sync", handler);
   };
-
-  roomSocket.on("awareness", handler);
-  return () => roomSocket?.off("awareness", handler);
 };
 
-// Listen for remote cursor updates
-export const onRemoteCursor = (
-  callback: (cursor: {
-    id: string;
-    username: string;
-    color: string;
-    position: CursorPosition;
-  }) => void,
-) => {
-  if (!roomSocket) {
-    throw new Error("Socket not initialized");
-  }
-
-  const handler = (cursor: {
-    id: string;
-    username: string;
-    color: string;
-    position: CursorPosition;
-  }) => {
-    console.log("Received remote cursor event:", cursor);
-    callback(cursor);
+// Event listeners for user presence
+export const setupPresenceListeners = (socket: Socket) => {
+  return {
+    onAwareness: (callback: (state: AwarenessState) => void) => {
+      socket.on("awareness", callback);
+      return () => socket.off("awareness", callback);
+    },
+    onUserJoined: (callback: (user: User) => void) => {
+      socket.on("user-joined", callback);
+      return () => socket.off("user-joined", callback);
+    },
+    onUserLeft: (callback: (user: User) => void) => {
+      socket.on("user-left", callback);
+      return () => socket.off("user-left", callback);
+    },
+    onUserListUpdated: (callback: (users: User[]) => void) => {
+      socket.on("user-list-updated", callback);
+      return () => socket.off("user-list-updated", callback);
+    },
+    onChatMessage: (callback: (message: ChatMessage) => void) => {
+      socket.on("chat-message", callback);
+      return () => socket.off("chat-message", callback);
+    },
+    onLanguageChanged: (callback: (data: { language: string }) => void) => {
+      socket.on("language-changed", callback);
+      return () => socket.off("language-changed", callback);
+    },
   };
-
-  roomSocket.on("remote-cursor", handler);
-  return () => roomSocket?.off("remote-cursor", handler);
 };
 
-// Listen for user joined events
-export const onUserJoined = (callback: (user: User) => void) => {
-  if (!roomSocket) {
-    throw new Error("Socket not initialized");
-  }
-
-  const handler = (user: User) => {
-    console.log("User joined:", user);
-    callback(user);
-  };
-
-  roomSocket.on("user-joined", handler);
-  return () => roomSocket?.off("user-joined", handler);
-};
-
-// Listen for user left events
-export const onUserLeft = (callback: (user: User) => void) => {
-  if (!roomSocket) {
-    throw new Error("Socket not initialized");
-  }
-
-  const handler = (user: User) => {
-    console.log("User left:", user);
-    callback(user);
-  };
-
-  roomSocket.on("user-left", handler);
-  return () => roomSocket?.off("user-left", handler);
-};
-
-// Listen for user list updates
-export const onUserListUpdated = (callback: (users: User[]) => void) => {
-  if (!roomSocket) {
-    throw new Error("Socket not initialized");
-  }
-
-  const handler = (users: User[]) => {
-    console.log("User list updated:", users);
-    callback(users);
-  };
-
-  roomSocket.on("user-list-updated", handler);
-  return () => roomSocket?.off("user-list-updated", handler);
-};
-
-// Listen for chat messages
-export const onChatMessage = (callback: (message: ChatMessage) => void) => {
-  if (!roomSocket) {
-    throw new Error("Socket not initialized");
-  }
-
-  roomSocket.on("chat-message", callback);
-  return () => roomSocket?.off("chat-message", callback);
-};
-
-// Listen for language changes
-export const onLanguageChanged = (
-  callback: (data: { language: string }) => void,
-) => {
-  if (!roomSocket) {
-    throw new Error("Socket not initialized");
-  }
-
-  const handler = (data: { language: string }) => {
-    console.log("Language changed:", data);
-    callback(data);
-  };
-
-  roomSocket.on("language-changed", handler);
-  return () => roomSocket?.off("language-changed", handler);
-};
-
-// Get the socket instance
-export const getSocket = () => roomSocket;
+// Update getSocket to use the manager
+export const getSocket = () => socketManager.getSocket();
 
 // Reconnect sockets if needed
 export const reconnectSockets = () => {
-  if (roomSocket && !roomSocket.connected) {
-    roomSocket.connect();
+  const socket = socketManager.getSocket();
+  if (socket && !socket.connected) {
+    console.log("Manually reconnecting socket");
+    socket.connect();
+  } else if (!socket) {
+    console.log("Initializing socket on reconnect");
+    socketManager.initialize();
   }
 };
 
 // Clean up sockets
 export const cleanupSockets = () => {
-  if (roomSocket) {
-    roomSocket.disconnect();
-  }
+  socketManager.disconnect();
 };
 
 // Verify an invite token
@@ -353,6 +410,7 @@ export const verifyInviteToken = (
   try {
     // Token is simply a base64 encoded room ID
     const roomId = atob(token);
+    console.log(`Verified invite token for room: ${roomId}`);
     return Promise.resolve({ valid: true, roomId });
   } catch (error) {
     console.error("Error verifying token:", error);

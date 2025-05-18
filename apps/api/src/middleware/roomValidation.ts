@@ -10,7 +10,7 @@ export const SUPPORTED_LANGUAGES = [
 ];
 
 export const createRoomValidation = [
-  body("name")
+  body("roomName")
     .trim()
     .notEmpty()
     .withMessage("Room name is required")

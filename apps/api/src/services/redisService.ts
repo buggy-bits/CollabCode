@@ -1,13 +1,24 @@
-import { redisClient, redisPubSubClient } from "../index.js";
+import { redisClient as appRedisClient } from "../index.js";
+import type { RedisClientType } from "redis";
 
 // TTL for different types of data (in seconds)
 const METADATA_TTL = 86400; // 24 hours
 const PRESENCE_TTL = 3600; // 1 hour
 
+// Global Redis client
+let redisClient: any = null;
+
 /**
  * Redis Pub/Sub service for real-time broadcasting
  */
 export class RedisPubSubService {
+  // Initialize the service with a Redis client
+  static async init(client: any) {
+    redisClient = client;
+    console.log("Redis PubSub service initialized");
+    return this;
+  }
+
   // Generate Redis channel name for a room
   static getRoomChannel(roomId: string): string {
     return `collabcode:room:${roomId}`;
@@ -20,6 +31,10 @@ export class RedisPubSubService {
     payload: any,
     excludeSocketId?: string,
   ): Promise<void> {
+    if (!redisClient) {
+      throw new Error("Redis client not initialized");
+    }
+
     try {
       const channel = this.getRoomChannel(roomId);
       const message = JSON.stringify({
@@ -40,10 +55,19 @@ export class RedisPubSubService {
     roomId: string,
     callback: (message: any) => void,
   ): Promise<void> {
+    if (!redisClient) {
+      throw new Error("Redis client not initialized");
+    }
+
     try {
       const channel = this.getRoomChannel(roomId);
 
-      await redisPubSubClient.subscribe(channel, (message) => {
+      // Create duplicate client for subscription
+      const subClient = redisClient.duplicate();
+      await subClient.connect();
+
+      // Subscribe to channel
+      await subClient.subscribe(channel, (message) => {
         try {
           const parsedMessage = JSON.parse(message);
           callback(parsedMessage);
@@ -60,13 +84,18 @@ export class RedisPubSubService {
 
   // Unsubscribe from a room channel
   static async unsubscribe(roomId: string): Promise<void> {
+    if (!redisClient) {
+      throw new Error("Redis client not initialized");
+    }
+
     try {
       const channel = this.getRoomChannel(roomId);
 
-      if (redisPubSubClient.isOpen) {
-        await redisPubSubClient.unsubscribe(channel);
-        console.log(`Unsubscribed from channel: ${channel}`);
-      }
+      // Create duplicate client for subscription
+      const subClient = redisClient.duplicate();
+      await subClient.connect();
+      await subClient.unsubscribe(channel);
+      console.log(`Unsubscribed from channel: ${channel}`);
     } catch (error) {
       console.error(`Redis unsubscribe error for room ${roomId}:`, error);
     }
@@ -77,6 +106,13 @@ export class RedisPubSubService {
  * Redis Presence Management service
  */
 export class RedisPresenceService {
+  // Initialize the service with a Redis client
+  static async init(client: RedisClientType) {
+    redisClient = client;
+    console.log("Redis Presence service initialized");
+    return this;
+  }
+
   // Get Redis key for room users
   static getUsersKey(roomId: string): string {
     return `collabcode:room:${roomId}:users`;
@@ -88,6 +124,10 @@ export class RedisPresenceService {
     socketId: string,
     userData: any,
   ): Promise<void> {
+    if (!redisClient) {
+      throw new Error("Redis client not initialized");
+    }
+
     try {
       const usersKey = this.getUsersKey(roomId);
       await redisClient.hSet(usersKey, socketId, JSON.stringify(userData));
@@ -102,6 +142,10 @@ export class RedisPresenceService {
 
   // Remove a user from a room
   static async removeUser(roomId: string, socketId: string): Promise<boolean> {
+    if (!redisClient) {
+      throw new Error("Redis client not initialized");
+    }
+
     try {
       const usersKey = this.getUsersKey(roomId);
       await redisClient.hDel(usersKey, socketId);
@@ -118,6 +162,10 @@ export class RedisPresenceService {
 
   // Get all users in a room
   static async getUsers(roomId: string): Promise<any[]> {
+    if (!redisClient) {
+      throw new Error("Redis client not initialized");
+    }
+
     try {
       const usersKey = this.getUsersKey(roomId);
       const usersData = await redisClient.hGetAll(usersKey);
@@ -137,6 +185,10 @@ export class RedisPresenceService {
 
   // Get all rooms a socket is in
   static async getUserRooms(socketId: string): Promise<string[]> {
+    if (!redisClient) {
+      throw new Error("Redis client not initialized");
+    }
+
     try {
       return await redisClient.sMembers(`socket:${socketId}:rooms`);
     } catch (error) {
@@ -147,6 +199,10 @@ export class RedisPresenceService {
 
   // Clean up when a socket disconnects
   static async handleDisconnect(socketId: string): Promise<string[]> {
+    if (!redisClient) {
+      throw new Error("Redis client not initialized");
+    }
+
     try {
       // Get all rooms this socket was in
       const rooms = await this.getUserRooms(socketId);
@@ -177,11 +233,15 @@ export class RedisPresenceService {
 export class RedisMetadataService {
   // Get Redis key for room metadata
   static getMetadataKey(roomId: string): string {
-    return `collabcode:room:${roomId}:metadata`;
+    return `room:${roomId}:metadata`;
   }
 
   // Cache room metadata
   static async cacheMetadata(roomId: string, metadata: any): Promise<void> {
+    if (!redisClient) {
+      throw new Error("Redis client not initialized");
+    }
+
     try {
       const metadataKey = this.getMetadataKey(roomId);
       await redisClient.hSet(metadataKey, metadata);
@@ -193,6 +253,10 @@ export class RedisMetadataService {
 
   // Get cached room metadata
   static async getMetadata(roomId: string): Promise<any | null> {
+    if (!redisClient) {
+      throw new Error("Redis client not initialized");
+    }
+
     try {
       const metadataKey = this.getMetadataKey(roomId);
       const metadata = await redisClient.hGetAll(metadataKey);
@@ -207,6 +271,10 @@ export class RedisMetadataService {
 
   // Delete cached room metadata
   static async deleteMetadata(roomId: string): Promise<void> {
+    if (!redisClient) {
+      throw new Error("Redis client not initialized");
+    }
+
     try {
       const metadataKey = this.getMetadataKey(roomId);
       await redisClient.del(metadataKey);
@@ -221,6 +289,10 @@ export class RedisMetadataService {
     field: string,
     value: any,
   ): Promise<void> {
+    if (!redisClient) {
+      throw new Error("Redis client not initialized");
+    }
+
     try {
       const metadataKey = this.getMetadataKey(roomId);
       await redisClient.hSet(metadataKey, field, value.toString());
