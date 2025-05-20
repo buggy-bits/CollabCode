@@ -50,7 +50,7 @@ export interface ChatMessage {
 }
 
 export interface CodeOperation {
-  type: "update" | "content" | "language-change";
+  type: "update" | "content" | "language-change" | "sync";
   update?: string;
   content?: string;
 }
@@ -127,7 +127,10 @@ class SocketManager {
 
     const now = Date.now();
     const timeSinceLastAttempt = now - this.lastReconnectAttempt;
-    const attempts = this.socket.io?.reconnectionAttempts || 0;
+    const attempts =
+      typeof this.socket.io?.reconnectionAttempts === "function"
+        ? this.socket.io.reconnectionAttempts()
+        : 0;
     const backoffDelay = Math.min(1000 * Math.pow(2, attempts), 10000);
 
     if (timeSinceLastAttempt >= backoffDelay) {

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import {
   Box,
   Paper,
-  Typography,
+  // Typography,
   Badge,
   Chip,
   Select,
@@ -14,7 +14,7 @@ import {
   Alert,
   IconButton,
   Tooltip,
-  Divider,
+  // Divider,
   AvatarGroup,
   Avatar,
   Dialog,
@@ -41,8 +41,7 @@ import { Awareness } from "y-protocols/awareness";
 import { MonacoBinding } from "y-monaco";
 import {
   RemoteCursorManager,
-  RemoteSelection,
-  EditorContentManager,
+  // REMOVE: EditorContentManager,
 } from "@convergencelabs/monaco-collab-ext";
 import {
   joinEditor,
@@ -278,9 +277,14 @@ class SocketIOProvider {
   private status: SocketStatus = "disconnected";
   private statusCallbacks: Array<(status: { status: string }) => void> = [];
   private typingTimeout: ReturnType<typeof setTimeout> | null = null;
-  private lastTypingUpdate = 0;
+  // REMOVE: private lastTypingUpdate = 0;
   private readonly TYPING_THROTTLE = 1000; // 1 second between typing updates
   private updateHandlers: Set<(update: Uint8Array, origin: unknown) => void>;
+  // REMOVE: private yTextObserver: () => void | null = null;
+  private pendingUpdates: Uint8Array[] = [];
+  private pendingUpdateTimer: ReturnType<typeof setTimeout> | null = null;
+  private pendingUpdateInterval = 50; // 50ms between update batches
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(roomId: string, language: string, doc: Y.Doc, username: string) {
     this.roomId = roomId;
@@ -333,10 +337,43 @@ class SocketIOProvider {
     this.socket.off("update");
     this.socket.off("sync");
     this.socket.off("awareness");
+    this.socket.off("disconnect");
+    this.socket.off("connect");
+
+    // Handle reconnection
+    this.socket.on("reconnect", () => {
+      console.log("Socket reconnected, requesting sync");
+      this.updateStatus("connecting");
+      this.requestSync();
+    });
+
+    this.socket.on("disconnect", () => {
+      console.log("Socket disconnected");
+      this.updateStatus("disconnected");
+
+      // Try to reconnect after a short delay
+      if (this.reconnectTimer) {
+        clearTimeout(this.reconnectTimer);
+      }
+      this.reconnectTimer = setTimeout(() => {
+        console.log("Attempting to reconnect...");
+        this.connect();
+      }, 2000);
+    });
+
+    this.socket.on("connect", () => {
+      console.log("Socket connected");
+      this.updateStatus("connecting");
+
+      // Re-join the room and request sync after connecting
+      joinEditor(this.roomId, this.language);
+      this.requestSync();
+    });
 
     // Set up listeners
     const updateHandler = (update: Uint8Array) => {
       try {
+        console.log("Received update from remote");
         Y.applyUpdate(this.doc, update, this);
         this.updateStatus("connected");
       } catch (err) {
@@ -348,6 +385,7 @@ class SocketIOProvider {
 
     const syncHandler = (syncState: Uint8Array) => {
       try {
+        console.log("Received sync state");
         Y.applyUpdate(this.doc, syncState, this);
         this.updateStatus("connected");
       } catch (err) {
@@ -368,11 +406,13 @@ class SocketIOProvider {
       // Only send update if it originated locally (not from received updates)
       if (origin !== this) {
         try {
-          const encodedUpdate = Buffer.from(update).toString("base64");
-          sendCodeEdit(this.roomId, this.language, {
-            type: "update",
-            update: encodedUpdate,
-          });
+          console.log("Local update detected, sending to server");
+
+          // Add to pending updates queue
+          this.pendingUpdates.push(update);
+
+          // Process the pending updates with throttling
+          this.processPendingUpdates();
 
           // Update typing indicator
           this.updateTypingState(true);
@@ -385,6 +425,10 @@ class SocketIOProvider {
       }
     };
 
+    // Remove any existing listener
+    this.doc.off("update", updateListener);
+
+    // Add new listener
     this.doc.on("update", updateListener);
 
     // Set up awareness
@@ -419,7 +463,37 @@ class SocketIOProvider {
 
     this.awareness.on("update", awarenessUpdateHandler);
 
+    // Request initial sync after joining the room
+    this.requestSync();
+
     this.updateStatus("connected");
+  }
+
+  // Process pending updates with throttling
+  private processPendingUpdates() {
+    if (this.pendingUpdateTimer) {
+      // Timer already running, updates will be processed in the next batch
+      return;
+    }
+
+    this.pendingUpdateTimer = setTimeout(() => {
+      if (this.pendingUpdates.length > 0) {
+        // Merge all pending updates into a single update
+        const mergedUpdate = Y.mergeUpdates(this.pendingUpdates);
+
+        // Send the merged update
+        const encodedUpdate = Buffer.from(mergedUpdate).toString("base64");
+        sendCodeEdit(this.roomId, this.language, {
+          type: "update",
+          update: encodedUpdate,
+        });
+
+        // Clear pending updates
+        this.pendingUpdates = [];
+      }
+
+      this.pendingUpdateTimer = null;
+    }, this.pendingUpdateInterval);
   }
 
   private handleAwarenessUpdate = (awarenessState: AwarenessState) => {
@@ -478,7 +552,11 @@ class SocketIOProvider {
         states.set(clientId, state);
 
         // Emit the update event (should be an array of updated client IDs)
-        this.awareness.emit("update", [clientId]);
+        this.awareness.emit("update", {
+          added: [],
+          updated: [clientId],
+          removed: [],
+        });
       }
     } catch (err) {
       console.error("Error handling awareness update:", err);
@@ -488,11 +566,15 @@ class SocketIOProvider {
   // Register update handler
   public onUpdate(handler: (update: Uint8Array, origin: unknown) => void) {
     this.updateHandlers.add(handler);
+    return () => {
+      this.updateHandlers.delete(handler);
+    };
   }
 
   // Request a full sync from other clients
   private requestSync() {
-    if (this.socket) {
+    if (this.socket && this.socket.connected) {
+      console.log("Requesting full sync for room:", this.roomId);
       this.socket.emit("request-sync", this.roomId, this.language);
     }
   }
@@ -547,6 +629,18 @@ class SocketIOProvider {
   }
 
   public disconnect() {
+    // Clean up pending updates
+    if (this.pendingUpdateTimer) {
+      clearTimeout(this.pendingUpdateTimer);
+      this.pendingUpdateTimer = null;
+    }
+
+    // Clean up reconnect timer
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+
     if (this.socket) {
       const cleanup = onUpdate(() => {});
       cleanup();
@@ -554,7 +648,13 @@ class SocketIOProvider {
       const cleanupSync = onSync(() => {});
       cleanupSync();
 
-      // Awareness cleanup is handled by this.awareness.destroy() below.
+      // Remove socket listeners
+      this.socket.off("update");
+      this.socket.off("sync");
+      this.socket.off("awareness");
+      this.socket.off("disconnect");
+      this.socket.off("connect");
+      this.socket.off("reconnect");
     }
 
     // Clear typing timeout
@@ -611,6 +711,7 @@ const CodeEditor = ({
     message: "",
     severity: "info",
   });
+  // REMOVE: const [initialLoadComplete, setInitialLoadComplete] = useState(false);
 
   // Refs to store Y.js document, provider, and Monaco binding
   const documentRef = useRef<Y.Doc | null>(null);
@@ -621,6 +722,7 @@ const CodeEditor = ({
   const previousLanguageRef = useRef<string>(initialLanguage);
   const contentRef = useRef<Record<string, string>>({});
   const remoteCursorManagerRef = useRef<RemoteCursorManager | null>(null);
+  const lastUpdateTimestampRef = useRef<number>(Date.now());
 
   // Show a small toast notification
   const showToast = useCallback(
@@ -792,6 +894,19 @@ const CodeEditor = ({
     setShowSettingsDialog(!showSettingsDialog);
   };
 
+  // Force update to server
+  const forceSyncWithServer = useCallback(() => {
+    console.log("Forcing sync with server");
+    if (documentRef.current && providerRef.current) {
+      const state = Y.encodeStateAsUpdate(documentRef.current);
+      sendCodeEdit(roomId, language, {
+        type: "sync",
+        update: Buffer.from(state).toString("base64"),
+      });
+      lastUpdateTimestampRef.current = Date.now();
+    }
+  }, [roomId, language]);
+
   // Listen for user updates
   useEffect(() => {
     const socket = getSocket();
@@ -800,6 +915,8 @@ const CodeEditor = ({
     // User joined event handler
     const userJoinedHandler = (user: User) => {
       showToast(`${user.username} joined`, "info");
+      // Force sync when a user joins
+      forceSyncWithServer();
     };
 
     // User left event handler
@@ -822,38 +939,11 @@ const CodeEditor = ({
     // User list updated event handler
     const userListHandler = (users: User[]) => {
       setActiveUsers(users);
+      // Force sync if there are new users
+      if (users.length > activeUsers.length) {
+        forceSyncWithServer();
+      }
     };
-
-    // Remote cursor event handler
-    // const remoteCursorHandler = (cursorData: {
-    //   id: string;
-    //   username: string;
-    //   color: string;
-    //   position: {
-    //     lineNumber: number;
-    //     column: number;
-    //   };
-    // }) => {
-    //   if (
-    //     !editorRef.current ||
-    //     !monacoRef.current ||
-    //     !remoteCursorManagerRef.current
-    //   )
-    //     return;
-
-    //   const { id, username, color, position } = cursorData;
-
-    //   // Only handle if we have position data
-    //   if (!position || !position.lineNumber) return;
-
-    //   // Update the remote cursor
-    //   try {
-    //     remoteCursorManagerRef.current.addCursor(id, color, username);
-    //     remoteCursorManagerRef.current.setCursorPosition(id, position);
-    //   } catch (err) {
-    //     console.error("Error updating remote cursor:", err);
-    //   }
-    // };
 
     // Language changed handler
     const languageChangedHandler = (data: { language: string }) => {
@@ -868,6 +958,7 @@ const CodeEditor = ({
         );
       }
     };
+
     const { onUserLeft, onUserJoined, onUserListUpdated, onLanguageChanged } =
       setupPresenceListeners(socket);
 
@@ -875,7 +966,6 @@ const CodeEditor = ({
     const userJoinedUnsubscribe = onUserJoined(userJoinedHandler);
     const userLeftUnsubscribe = onUserLeft(userLeftHandler);
     const userListUnsubscribe = onUserListUpdated(userListHandler);
-    // Removed onRemoteCursor usage as it is not defined
     const languageChangedUnsubscribe = onLanguageChanged(
       languageChangedHandler,
     );
@@ -888,7 +978,7 @@ const CodeEditor = ({
       // remoteCursorUnsubscribe();
       languageChangedUnsubscribe();
     };
-  }, [language, showToast]);
+  }, [activeUsers.length, forceSyncWithServer, language, showToast]);
 
   // Update typing users
   useEffect(() => {
@@ -1087,15 +1177,8 @@ const CodeEditor = ({
             // Set up validation on content changes
             editor.onDidChangeModelContent(() => {
               if (autoValidateJson) {
-                // Clear any existing validation timeout
-                if (scrollSyncTimeoutRef.current) {
-                  clearTimeout(scrollSyncTimeoutRef.current);
-                }
-
-                // Validate after a short delay to avoid validating on every keystroke
-                scrollSyncTimeoutRef.current = setTimeout(() => {
-                  validateJsonContent(editor.getValue());
-                }, 1000);
+                const content = editor.getValue();
+                validateJsonContent(content);
               }
             });
           }

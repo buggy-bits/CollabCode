@@ -7,7 +7,7 @@ import {
   RedisPresenceService,
 } from "../services/redisService.js";
 import * as Y from "yjs";
-
+import { Buffer } from "node:buffer";
 // Types and Interfaces
 interface YDoc extends Y.Doc {
   getText(name: string): Y.Text;
@@ -167,7 +167,7 @@ class DocumentManager {
   static async getDocument(roomId: string, language: string): Promise<YDoc> {
     const docKey = `${roomId}:${language}`;
 
-    // If already in memory, return that instance
+    // If already in memory (server) , return that instance
     if (this.documents.has(docKey)) {
       return this.documents.get(docKey)!;
     }
