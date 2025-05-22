@@ -127,7 +127,7 @@ const HomePage = () => {
           method: "POST",
           headers: {
             "Content-Type": "application/json",
-            "x-username": createUsername,
+            "x-username": createUsername || "",
           },
           body: JSON.stringify({
             roomName: createRoomName,

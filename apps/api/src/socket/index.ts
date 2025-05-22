@@ -237,38 +237,26 @@ class DocumentManager {
         switch (eventType) {
           case "update": {
             if (payload.update) {
-              const binaryUpdate = Buffer.from(payload.update, "base64");
-              if (excludeSocketId) {
-                target
-                  .to(roomId)
-                  .except(excludeSocketId)
-                  .emit("update", binaryUpdate);
-              }
+              const binaryUpdate = Buffer.from(payload.update, "base64"); // Still need to parse base64
+              target.to(roomId).emit("update", binaryUpdate);
             }
             break;
           }
 
           case "awareness":
-            if (excludeSocketId) {
-              target
-                .to(roomId)
-                .except(excludeSocketId)
-                .emit("awareness", payload);
-            }
+            target.to(roomId).emit("awareness", payload);
             break;
 
           case "user_joined":
           case "user_left":
+          case "language-change":
           case "chat-message":
             target.to(roomId).emit(eventType.replace("_", "-"), payload);
             break;
 
           default:
             if (excludeSocketId) {
-              target
-                .to(roomId)
-                .except(excludeSocketId)
-                .emit(eventType, payload);
+              target.emit(eventType, payload);
             } else {
               target.to(roomId).emit(eventType, payload);
             }
@@ -385,8 +373,9 @@ function setupWSConnection(socket: Socket, doc: YDoc) {
 export function setupSocketServer(httpServer: HttpServer) {
   const io = new Server(httpServer, {
     cors: {
-      origin: "*", // TODO: Restrict in production
+      origin: process.env.CLIENT_URL || "http://localhost:5173",
       methods: ["GET", "POST"],
+      credentials: true,
     },
     connectionStateRecovery: {
       maxDisconnectionDuration: 2 * 60 * 1000,
@@ -417,41 +406,14 @@ export function setupSocketServer(httpServer: HttpServer) {
         // Add user to room tracking
         const userData = await addUserToRoom(roomId, socket.id, username);
 
-        // Setup subscriptions for this room
-        await RedisPubSubService.subscribe(roomId, (message) => {
-          const { eventType, payload, excludeSocketId } = message;
-
-          try {
-            switch (eventType) {
-              case "update": {
-                if (payload.update && excludeSocketId !== socket.id) {
-                  const binaryUpdate = Buffer.from(payload.update, "base64");
-                  socket.emit("update", binaryUpdate);
-                }
-                break;
-              }
-
-              case "awareness":
-                if (excludeSocketId !== socket.id) {
-                  socket.emit("awareness", payload);
-                }
-                break;
-
-              case "user_joined":
-              case "user_left":
-              case "chat-message":
-                socket.emit(eventType.replace("_", "-"), payload);
-                break;
-
-              default:
-                if (excludeSocketId !== socket.id) {
-                  socket.emit(eventType, payload);
-                }
-            }
-          } catch (err) {
-            console.error(`Error handling ${eventType} event:`, err);
-          }
-        });
+        // Get the document and send its state to the joining client
+        currentDoc = await DocumentManager.getDocument(
+          roomId,
+          socket.data.language || "javascript",
+        );
+        const state = Y.encodeStateAsUpdate(currentDoc);
+        const base64State = Buffer.from(state).toString("base64");
+        socket.emit("sync", base64State);
 
         // Notify others of join
         await RedisPubSubService.publish(roomId, "user_joined", {

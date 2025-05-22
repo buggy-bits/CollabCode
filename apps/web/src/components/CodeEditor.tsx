@@ -60,6 +60,7 @@ import {
   getJsonSchema,
   formatValidationErrors,
 } from "../utils/jsonValidator";
+import { YjsWebSocketProvider } from "../services/yjsWebSocket";
 
 // Define better types for Awareness to fix linter errors
 declare module "yjs" {
@@ -267,412 +268,25 @@ const SUPPORTED_LANGUAGES = [
   { value: "json", label: "JSON" },
 ];
 
-// Define a custom YjsProvider that works with our Socket.io implementation
-class SocketIOProvider {
-  public awareness: Awareness;
-  public socket: ReturnType<typeof getSocket>;
-  private roomId: string;
-  private language: string;
-  private doc: Y.Doc;
-  private status: SocketStatus = "disconnected";
-  private statusCallbacks: Array<(status: { status: string }) => void> = [];
-  private typingTimeout: ReturnType<typeof setTimeout> | null = null;
-  // REMOVE: private lastTypingUpdate = 0;
-  private readonly TYPING_THROTTLE = 1000; // 1 second between typing updates
-  private updateHandlers: Set<(update: Uint8Array, origin: unknown) => void>;
-  // REMOVE: private yTextObserver: () => void | null = null;
-  private pendingUpdates: Uint8Array[] = [];
-  private pendingUpdateTimer: ReturnType<typeof setTimeout> | null = null;
-  private pendingUpdateInterval = 50; // 50ms between update batches
-  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-
-  constructor(roomId: string, language: string, doc: Y.Doc, username: string) {
-    this.roomId = roomId;
-    this.language = language;
-    this.doc = doc;
-    this.socket = getSocket();
-    this.updateHandlers = new Set();
-
-    // Create awareness instance
-    this.awareness = new Awareness(doc);
-
-    // Set local user data
-    this.awareness.setLocalStateField("user", {
-      name: username,
-      color: this.getRandomColor(),
-    });
-
-    // Initialize socket connection
-    this.connect();
-
-    // Set up periodic state sync to ensure consistency
-    this.setupPeriodicSync();
-  }
-
-  private setupPeriodicSync() {
-    // Periodically sync state with others to ensure consistency
-    setInterval(() => {
-      if (this.status === "connected") {
-        const state = Y.encodeStateAsUpdate(this.doc);
-        sendCodeEdit(this.roomId, this.language, {
-          type: "sync",
-          update: Buffer.from(state).toString("base64"),
-        });
-      }
-    }, 30000); // Sync every 30 seconds
-  }
-
-  private connect() {
-    if (!this.socket) {
-      console.error("Socket not initialized");
-      return;
-    }
-
-    this.updateStatus("connecting");
-
-    // Connect to editor in this room
-    joinEditor(this.roomId, this.language);
-
-    // Clean up existing listeners
-    this.socket.off("update");
-    this.socket.off("sync");
-    this.socket.off("awareness");
-    this.socket.off("disconnect");
-    this.socket.off("connect");
-
-    // Handle reconnection
-    this.socket.on("reconnect", () => {
-      console.log("Socket reconnected, requesting sync");
-      this.updateStatus("connecting");
-      this.requestSync();
-    });
-
-    this.socket.on("disconnect", () => {
-      console.log("Socket disconnected");
-      this.updateStatus("disconnected");
-
-      // Try to reconnect after a short delay
-      if (this.reconnectTimer) {
-        clearTimeout(this.reconnectTimer);
-      }
-      this.reconnectTimer = setTimeout(() => {
-        console.log("Attempting to reconnect...");
-        this.connect();
-      }, 2000);
-    });
-
-    this.socket.on("connect", () => {
-      console.log("Socket connected");
-      this.updateStatus("connecting");
-
-      // Re-join the room and request sync after connecting
-      joinEditor(this.roomId, this.language);
-      this.requestSync();
-    });
-
-    // Set up listeners
-    const updateHandler = (update: Uint8Array) => {
-      try {
-        console.log("Received update from remote");
-        Y.applyUpdate(this.doc, update, this);
-        this.updateStatus("connected");
-      } catch (err) {
-        console.error("Error applying update:", err);
-        // Request full sync on error
-        this.requestSync();
-      }
-    };
-
-    const syncHandler = (syncState: Uint8Array) => {
-      try {
-        console.log("Received sync state");
-        Y.applyUpdate(this.doc, syncState, this);
-        this.updateStatus("connected");
-      } catch (err) {
-        console.error("Error applying sync state:", err);
-      }
-    };
-
-    // Listen for document updates
-    onUpdate(updateHandler);
-    onSync(syncHandler);
-    this.socket.on("awareness", (awarenessState: AwarenessState) => {
-      // Handle awareness state updates
-      this.handleAwarenessUpdate(awarenessState);
-    });
-
-    // Listen for document changes in Yjs document
-    const updateListener = (update: Uint8Array, origin: unknown) => {
-      // Only send update if it originated locally (not from received updates)
-      if (origin !== this) {
-        try {
-          console.log("Local update detected, sending to server");
-
-          // Add to pending updates queue
-          this.pendingUpdates.push(update);
-
-          // Process the pending updates with throttling
-          this.processPendingUpdates();
-
-          // Update typing indicator
-          this.updateTypingState(true);
-
-          // Notify update handlers
-          this.updateHandlers.forEach((handler) => handler(update, origin));
-        } catch (err) {
-          console.error("Error handling document update:", err);
-        }
-      }
-    };
-
-    // Remove any existing listener
-    this.doc.off("update", updateListener);
-
-    // Add new listener
-    this.doc.on("update", updateListener);
-
-    // Set up awareness
-    const awarenessUpdateHandler = ({
-      added,
-      updated,
-      removed,
-    }: {
-      added: number[];
-      updated: number[];
-      removed: number[];
-    }) => {
-      // Send local awareness state to server
-      const localState = this.awareness.getLocalState();
-      if (localState && this.socket) {
-        // Convert to the expected format for the socket service
-        const awarenessState: AwarenessState = {
-          clientId: this.socket.id,
-          user: localState.user,
-          cursor: localState.cursor,
-          selection: localState.selection,
-          isTyping: localState.isTyping as boolean,
-          scrollPosition: localState.scrollPosition,
-          username: localState.user?.name,
-          color: localState.user?.color,
-          timestamp: Date.now(),
-        };
-
-        updateAwareness(awarenessState);
-      }
-    };
-
-    this.awareness.on("update", awarenessUpdateHandler);
-
-    // Request initial sync after joining the room
-    this.requestSync();
-
-    this.updateStatus("connected");
-  }
-
-  // Process pending updates with throttling
-  private processPendingUpdates() {
-    if (this.pendingUpdateTimer) {
-      // Timer already running, updates will be processed in the next batch
-      return;
-    }
-
-    this.pendingUpdateTimer = setTimeout(() => {
-      if (this.pendingUpdates.length > 0) {
-        // Merge all pending updates into a single update
-        const mergedUpdate = Y.mergeUpdates(this.pendingUpdates);
-
-        // Send the merged update
-        const encodedUpdate = Buffer.from(mergedUpdate).toString("base64");
-        sendCodeEdit(this.roomId, this.language, {
-          type: "update",
-          update: encodedUpdate,
-        });
-
-        // Clear pending updates
-        this.pendingUpdates = [];
-      }
-
-      this.pendingUpdateTimer = null;
-    }, this.pendingUpdateInterval);
-  }
-
-  private handleAwarenessUpdate = (awarenessState: AwarenessState) => {
-    if (!awarenessState) return;
-
-    try {
-      // Update awareness states from other clients
-      if (
-        awarenessState.clientId &&
-        awarenessState.clientId !== this.socket?.id
-      ) {
-        const states = this.awareness.getStates();
-        const clientId = parseInt(awarenessState.clientId, 10) || 0;
-
-        // Create a valid state object
-        const state: Record<string, unknown> = {};
-
-        // Copy user data
-        if (awarenessState.user) {
-          state.user = {
-            name:
-              awarenessState.user.name ||
-              awarenessState.username ||
-              "Anonymous",
-            color:
-              awarenessState.user.color || awarenessState.color || "#ffcc00",
-          };
-        } else if (awarenessState.username) {
-          state.user = {
-            name: awarenessState.username,
-            color: awarenessState.color || "#ffcc00",
-          };
-        }
-
-        // Copy cursor data if available
-        if (awarenessState.cursor) {
-          state.cursor = awarenessState.cursor;
-        }
-
-        // Copy selection data if available
-        if (awarenessState.selection) {
-          state.selection = awarenessState.selection;
-        }
-
-        // Copy typing state
-        if (awarenessState.isTyping !== undefined) {
-          state.isTyping = awarenessState.isTyping;
-        }
-
-        // Copy scroll position
-        if (awarenessState.scrollPosition) {
-          state.scrollPosition = awarenessState.scrollPosition;
-        }
-
-        // Update the state in the awareness instance
-        states.set(clientId, state);
-
-        // Emit the update event (should be an array of updated client IDs)
-        this.awareness.emit("update", {
-          added: [],
-          updated: [clientId],
-          removed: [],
-        });
-      }
-    } catch (err) {
-      console.error("Error handling awareness update:", err);
-    }
-  };
-
-  // Register update handler
-  public onUpdate(handler: (update: Uint8Array, origin: unknown) => void) {
-    this.updateHandlers.add(handler);
-    return () => {
-      this.updateHandlers.delete(handler);
-    };
-  }
-
-  // Request a full sync from other clients
-  private requestSync() {
-    if (this.socket && this.socket.connected) {
-      console.log("Requesting full sync for room:", this.roomId);
-      this.socket.emit("request-sync", this.roomId, this.language);
-    }
-  }
-
-  private getRandomColor(): string {
-    const colors = [
-      "#3498db",
-      "#9b59b6",
-      "#2ecc71",
-      "#f1c40f",
-      "#e74c3c",
-      "#1abc9c",
-      "#34495e",
-      "#e67e22",
-      "#16a085",
-      "#d35400",
-      "#27ae60",
-      "#2980b9",
-      "#8e44ad",
-      "#f39c12",
-      "#c0392b",
-    ];
-    return colors[Math.floor(Math.random() * colors.length)]!;
-  }
-
-  private updateStatus(status: SocketStatus) {
-    this.status = status;
-    this.statusCallbacks.forEach((cb) => cb({ status }));
-  }
-
-  // Add updateTypingState method to manage typing awareness
-  public updateTypingState(isTyping: boolean) {
-    this.awareness.setLocalStateField("isTyping", isTyping);
-
-    // Optionally, clear typing state after a short delay
-    if (this.typingTimeout) {
-      clearTimeout(this.typingTimeout);
-    }
-    if (isTyping) {
-      this.typingTimeout = setTimeout(() => {
-        this.awareness.setLocalStateField("isTyping", false);
-      }, this.TYPING_THROTTLE);
-    }
-  }
-
-  public on(event: string, callback: (event: { status: string }) => void) {
-    if (event === "status") {
-      this.statusCallbacks.push(callback);
-      // Immediately call with current status
-      callback({ status: this.status });
-    }
-  }
-
-  public disconnect() {
-    // Clean up pending updates
-    if (this.pendingUpdateTimer) {
-      clearTimeout(this.pendingUpdateTimer);
-      this.pendingUpdateTimer = null;
-    }
-
-    // Clean up reconnect timer
-    if (this.reconnectTimer) {
-      clearTimeout(this.reconnectTimer);
-      this.reconnectTimer = null;
-    }
-
-    if (this.socket) {
-      const cleanup = onUpdate(() => {});
-      cleanup();
-
-      const cleanupSync = onSync(() => {});
-      cleanupSync();
-
-      // Remove socket listeners
-      this.socket.off("update");
-      this.socket.off("sync");
-      this.socket.off("awareness");
-      this.socket.off("disconnect");
-      this.socket.off("connect");
-      this.socket.off("reconnect");
-    }
-
-    // Clear typing timeout
-    if (this.typingTimeout) {
-      clearTimeout(this.typingTimeout);
-      this.typingTimeout = null;
-    }
-
-    // Remove update listeners
-    try {
-      this.doc.off("update", (update: Uint8Array, origin: any) => {});
-    } catch (err) {
-      console.error("Error removing update listener:", err);
-    }
-
-    this.awareness.destroy();
-    this.updateStatus("disconnected");
-  }
+function getRandomColor(): string {
+  const colors = [
+    "#3498db",
+    "#9b59b6",
+    "#2ecc71",
+    "#f1c40f",
+    "#e74c3c",
+    "#1abc9c",
+    "#34495e",
+    "#e67e22",
+    "#16a085",
+    "#d35400",
+    "#27ae60",
+    "#2980b9",
+    "#8e44ad",
+    "#f39c12",
+    "#c0392b",
+  ];
+  return colors[Math.floor(Math.random() * colors.length)]!;
 }
 
 const CodeEditor = ({
@@ -715,7 +329,7 @@ const CodeEditor = ({
 
   // Refs to store Y.js document, provider, and Monaco binding
   const documentRef = useRef<Y.Doc | null>(null);
-  const providerRef = useRef<SocketIOProvider | null>(null);
+  const providerRef = useRef<YjsWebSocketProvider | null>(null);
   const bindingRef = useRef<MonacoBinding | null>(null);
   const monacoRef = useRef<Monaco | null>(null);
   const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null);
@@ -817,7 +431,7 @@ const CodeEditor = ({
       }
 
       // Update the language in the room on the server
-      await updateRoomLanguage(roomId, newLanguage);
+      // await updateRoomLanguage(roomId, newLanguage);
 
       // Update local state
       setLanguage(newLanguage);
@@ -828,7 +442,7 @@ const CodeEditor = ({
       }
 
       // Notify other users in the room via socket
-      changeLanguage(roomId, newLanguage);
+      // changeLanguage(roomId, newLanguage);
 
       previousLanguageRef.current = newLanguage;
 
@@ -838,10 +452,10 @@ const CodeEditor = ({
         contentRef.current[newLanguage] = boilerplate;
 
         // Notify others about new content via code-edit
-        sendCodeEdit(roomId, newLanguage, {
-          type: "content",
-          content: boilerplate,
-        });
+        // sendCodeEdit(roomId, newLanguage, {
+        //   type: "content",
+        //   content: boilerplate,
+        // });
       }
 
       // Set up JSON validation if needed
@@ -1037,14 +651,14 @@ const CodeEditor = ({
     // Create Y.js document
     documentRef.current = new Y.Doc();
 
-    // Create our custom provider that works with Socket.io
-    providerRef.current = new SocketIOProvider(
+    // Create WebSocket provider
+    providerRef.current = new YjsWebSocketProvider(
       roomId,
-      language,
       documentRef.current,
       username,
     );
 
+    // Update connection status
     providerRef.current.on("status", (event: { status: string }) => {
       setIsConnected(event.status === "connected");
     });
@@ -1155,9 +769,20 @@ const CodeEditor = ({
                 timestamp: Date.now(),
               });
 
-              // Update typing indicator via provider's public method
+              // Update typing indicator via Yjs Awareness API
               if (providerRef.current) {
-                providerRef.current.updateTypingState(true);
+                providerRef.current.awareness.setLocalStateField(
+                  "isTyping",
+                  true,
+                );
+
+                // Optionally, clear typing state after a short delay
+                setTimeout(() => {
+                  providerRef.current?.awareness.setLocalStateField(
+                    "isTyping",
+                    false,
+                  );
+                }, 1000);
               }
             } catch (err) {
               console.error("Error handling cursor position change:", err);
@@ -1289,7 +914,8 @@ const CodeEditor = ({
             </FormControl>
           )}
 
-          {typingUsers.length > 0 && (
+          {/* TODO: Add typing indicator
+           {typingUsers.length > 0 && (
             <Chip
               label={
                 typingUsers.length === 1
@@ -1300,7 +926,7 @@ const CodeEditor = ({
               variant="outlined"
               size="small"
             />
-          )}
+          )} */}
         </Box>
 
         <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>

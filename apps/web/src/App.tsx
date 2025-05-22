@@ -8,6 +8,7 @@ import { ThemeProvider, createTheme, CssBaseline } from "@mui/material";
 import HomePage from "./pages/HomePage";
 import RoomPage from "./pages/RoomPage";
 import InvitePage from "./pages/InvitePage"; // We'll need to implement this
+import ChatTestPage from "./pages/ChatTestPage";
 
 const darkTheme = createTheme({
   palette: {
@@ -24,6 +25,7 @@ function App() {
           <Route path="/" element={<HomePage />} />
           <Route path="/room/:roomId" element={<RoomPage />} />
           <Route path="/invite/:token" element={<InvitePage />} />
+          {/* <Route path="/chat-test" element={<ChatTestPage />} /> */}
           <Route path="*" element={<Navigate to="/" replace />} />
         </Routes>
       </Router>

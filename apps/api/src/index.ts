@@ -7,6 +7,7 @@ import { createClient } from "redis";
 import dotenv from "dotenv";
 import http from "http";
 import { setupSocketServer } from "./socket/index.js";
+import { setupWebSocketServer } from "./websocket/index.js";
 import roomRoutes from "./routes/roomRoutes.js";
 import { requestLogger } from "./middleware/requestLogger.js";
 import {
@@ -54,8 +55,11 @@ redisPubSubClient.on("connect", () =>
   }
 })();
 
-// Set up Socket.io - pass Redis client for shared usage
+// Setup Socket.IO server for chat
 const io = setupSocketServer(server);
+
+// Setup WebSocket server for Yjs
+const wss = setupWebSocketServer(server);
 
 // Middleware
 app.use(cors()); // Enable CORS for all routes
@@ -106,6 +110,9 @@ const gracefulShutdown = async () => {
 
   // Close Socket.IO connections
   io.close(() => console.log("Socket.IO server closed"));
+
+  // Close WebSocket connections
+  wss.close(() => console.log("WebSocket server closed"));
 
   // Disconnect from Redis
   if (redisClient.isOpen) {

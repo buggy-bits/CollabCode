@@ -21,13 +21,15 @@
     "react-dom": "^19.0.0",
     "react-router-dom": "^7.6.0",
     "socket.io-client": "^4.8.1",
+    "ws": "^8.16.0",
     "y-monaco": "^0.1.6",
-    "y-websocket": "^3.0.0"
+    "yjs": "^13.6.27"
   },
   "devDependencies": {
     "@eslint/js": "^9.22.0",
     "@types/react": "^19.0.10",
     "@types/react-dom": "^19.0.4",
+    "@types/ws": "^8.5.10",
     "@vitejs/plugin-react": "^4.3.4",
     "eslint": "^9.22.0",
     "eslint-plugin-react-hooks": "^5.2.0",
