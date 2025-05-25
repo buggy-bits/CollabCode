@@ -22,12 +22,13 @@
     "morgan": "^1.10.0",
     "redis": "^4.6.13",
     "socket.io": "^4.8.1",
+    "socket.io-client": "^2.4.0",
     "uuid": "^11.1.0",
     "ws": "^8.16.0",
     "y-monaco": "^0.1.6",
     "y-protocols": "^1.0.6",
     "y-websocket": "^1.4.5",
-    "yjs": "^13.6.26",
+    "yjs": "^13.6.27",
     "zod": "^3.24.4"
   },
   "devDependencies": {

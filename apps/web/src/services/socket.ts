@@ -90,7 +90,7 @@ export class CollaborationManager {
     // Clean up existing connection if any
     this.disconnect();
 
-    const WS_URL = import.meta.env.VITE_WS_URL || "ws://localhost:3000";
+    const WS_URL = import.meta.env.VITE_WS_URL || "ws://localhost:3002";
 
     console.log("Initializing Y-WebSocket connection to:", WS_URL);
     console.log("Room ID:", roomId, "Username:", username);

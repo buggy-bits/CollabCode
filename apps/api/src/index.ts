@@ -142,3 +142,78 @@ process.on("uncaughtException", (err) => {
   console.error("Uncaught exception:", err);
   gracefulShutdown();
 });
+
+import { createServer } from "http";
+import { Server as IOServer } from "socket.io";
+import ioClient from "socket.io-client"; // External Socket.IO client (v2.x)
+
+// Config
+const PROXY_PORT = 1234;
+const lang = "python";
+// const EXTERNAL_URL = `wss://${lang}.${process.env.EXECUTION_SERVER_ORIGIN}`;
+const EXTERNAL_URL = `wss://python.repl-web.programiz.com`;
+const sessionId = "YDIgjJnoc2"; // Replace this with dynamic value if needed
+
+const proxyApp = express();
+const httpServer = createServer(proxyApp);
+
+// Socket.IO server for clients (React app, Node test app)
+const io = new IOServer(httpServer, {
+  cors: {
+    origin: "*",
+    methods: ["GET", "POST"],
+  },
+});
+
+io.on("connection", (clientSocket) => {
+  console.log("✅ Frontend connected to proxy");
+
+  // Connect to external Socket.IO server (v2.x)
+  const externalSocket = ioClient(EXTERNAL_URL, {
+    transports: ["websocket"],
+    query: {
+      sessionId,
+      lang,
+    },
+  });
+
+  externalSocket.on("connect", () => {
+    console.log("✅ Connected to external server");
+  });
+
+  // Forward specific events from external → client (manually handle each event)
+  externalSocket.on("output", (data) => {
+    console.log("⬅️ External → Client: output", data);
+    clientSocket.emit("output", data);
+  });
+
+  externalSocket.on("disconnect", (reason) => {
+    console.log("⚠️ Disconnected from external server:", reason);
+  });
+
+  externalSocket.on("error", (err) => {
+    console.error("❌ External server error:", err);
+    clientSocket.emit("error", "External server connection failed.");
+  });
+
+  // Forward messages from client → external (manually handle each event)
+  clientSocket.on("run", (data) => {
+    console.log("➡️ Client → External: run", data);
+    externalSocket.emit("run", data);
+  });
+
+  clientSocket.on("evaluate", (data) => {
+    console.log("➡️ Client → External: evaluate", data);
+    externalSocket.emit("evaluate", data);
+  });
+
+  clientSocket.on("disconnect", () => {
+    console.log("⚠️ Client disconnected");
+    externalSocket.disconnect();
+  });
+});
+
+// Start server
+httpServer.listen(PROXY_PORT, () => {
+  console.log(`🚀 Proxy server running at http://localhost:${PROXY_PORT}`);
+});
