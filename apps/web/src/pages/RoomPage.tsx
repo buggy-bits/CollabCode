@@ -122,8 +122,12 @@ const RoomPage = () => {
       setIsOutputOpen(true);
 
       // Get the code from the editor
-      // const code = editorRef.current?.getValue() || "";
-
+      const userCode = editorRef.current?.getValue() || "";
+      console.log(socketRef.current);
+      if (socketRef.current) {
+        socketRef.current.disconnect();
+        socketRef.current = null;
+      }
       // Initialize socket connection if not already connected
       if (!socketRef.current) {
         socketRef.current = io(
@@ -141,8 +145,9 @@ const RoomPage = () => {
           // Emit "run" event to execute Python code
           if (socketRef.current) {
             socketRef.current.emit("run", {
-              code: 'print("Try.pro")\ninput("Hello:")\nprint("TRYME TOO")',
+              code: userCode,
             });
+            console.log(userCode);
             // socketRef.current.emit('language', { execution_language:  roomData?.language || 'javascript'});
           }
         });
@@ -151,6 +156,8 @@ const RoomPage = () => {
           console.log(data.output);
         });
         socketRef.current.on("disconnect", () => {
+          setIsRunning(false);
+          console.log("running set to false");
           console.log("Disconnected from execution server");
         });
 
@@ -169,6 +176,8 @@ const RoomPage = () => {
       // TODO: Show error in output area
     } finally {
       setIsRunning(false);
+      // socketRef.current = null;
+      console.log("running set to false");
     }
   };
 
@@ -217,6 +226,7 @@ const RoomPage = () => {
     return () => {
       if (socketRef.current) {
         socketRef.current.disconnect();
+        console.log("disconnected::");
       }
     };
   }, []);

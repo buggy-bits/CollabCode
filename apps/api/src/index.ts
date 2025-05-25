@@ -189,6 +189,7 @@ io.on("connection", (clientSocket) => {
 
   externalSocket.on("disconnect", (reason) => {
     console.log("⚠️ Disconnected from external server:", reason);
+    clientSocket.disconnect();
   });
 
   externalSocket.on("error", (err) => {
