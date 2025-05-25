@@ -5,13 +5,15 @@ import { RedisClientType } from "redis";
 import { redisClient } from "../index.js";
 import { RedisPubSubService } from "../services/redisService.js";
 
+import { setupWSConnection } from "y-websocket/bin/utils";
+
 // Document TTL in seconds (1 hour)
 const DOCUMENT_TTL = 3600;
 
 // Document store types
 type DocumentStore = Map<string, Y.Doc>;
 
-// Room document store - key is roomId:language
+// Room document store - key is roomId
 const documentsInMemory: DocumentStore = new Map();
 
 // Cache document state in Redis
@@ -50,37 +52,43 @@ class DocumentManager {
   private static cleanupTimers = new Map<string, NodeJS.Timeout>();
   private static readonly CLEANUP_DELAY = 1000 * 60 * 60; // 1 hour
 
-  static async getDocument(roomId: string, language: string): Promise<Y.Doc> {
-    const docKey = `${roomId}:${language}`;
-
+  static async getDocument(roomId: string): Promise<Y.Doc> {
     // If already in memory, return that instance
-    if (this.documents.has(docKey)) {
-      return this.documents.get(docKey)!;
+    if (this.documents.has(roomId)) {
+      return this.documents.get(roomId)!;
     }
 
     // Create a new doc
     const doc = new Y.Doc();
 
     // Try to load from Redis cache
-    const cachedState = await getDocumentFromCache(docKey);
+    const cachedState = await getDocumentFromCache(roomId);
     if (cachedState) {
       Y.applyUpdate(doc, cachedState);
-      console.log(`Loaded document for ${docKey} from cache`);
+      console.log(`Loaded document for ${roomId} from cache`);
     } else {
-      console.log(`Created new document for ${docKey}`);
+      console.log(`Created new document for ${roomId}`);
     }
 
     // Store in memory
-    this.documents.set(docKey, doc);
+    this.documents.set(roomId, doc);
+
+    // Set up document update handler
+    doc.on("update", async (update: Uint8Array, origin: any) => {
+      if (origin !== "redis") {
+        await this.saveDocument(roomId, doc);
+      }
+    });
+
     return doc;
   }
 
-  static async saveDocument(docKey: string, doc: Y.Doc): Promise<void> {
+  static async saveDocument(roomId: string, doc: Y.Doc): Promise<void> {
     try {
       const stateAsUpdate = Y.encodeStateAsUpdate(doc);
-      await cacheDocumentState(docKey, stateAsUpdate);
+      await cacheDocumentState(roomId, stateAsUpdate);
     } catch (err) {
-      console.error(`Failed to save document ${docKey}:`, err);
+      console.error(`Failed to save document ${roomId}:`, err);
     }
   }
 }
@@ -88,7 +96,6 @@ class DocumentManager {
 export function setupWebSocketServer(httpServer: HttpServer) {
   const wss = new WebSocketServer({
     server: httpServer,
-    path: "/yjs",
   });
 
   wss.on("connection", async (ws: WebSocket, request) => {
@@ -96,96 +103,46 @@ export function setupWebSocketServer(httpServer: HttpServer) {
 
     // Extract room ID from URL
     const url = new URL(request.url!, `http://${request.headers.host}`);
-    const roomId = url.pathname.split("/").pop();
+    const pathParts = url.pathname.split("/");
+    const roomId = pathParts[pathParts.length - 1];
+
     if (!roomId) {
+      console.error("No room ID found in URL:", url.pathname);
       ws.close(1008, "Room ID required");
       return;
     }
 
+    console.log(`Client connecting to room: ${roomId}`);
+
     let currentDoc: Y.Doc | null = null;
 
-    // Handle messages
-    ws.on("message", async (message: string) => {
-      try {
-        const data = JSON.parse(message.toString());
+    try {
+      // Get or create document for this room
+      currentDoc = await DocumentManager.getDocument(roomId);
+      setupWSConnection(ws, request, { docName: roomId });
+      // Send initial sync
+      const state = Y.encodeStateAsUpdate(currentDoc);
+      const base64State = Buffer.from(state).toString("base64");
+      ws.send(
+        JSON.stringify({
+          type: "sync",
+          update: base64State,
+        }),
+      );
 
-        switch (data.type) {
-          case "sync-request": {
-            // Get or create document
-            currentDoc = await DocumentManager.getDocument(
-              roomId,
-              "javascript",
-            );
-            const state = Y.encodeStateAsUpdate(currentDoc);
-            const base64State = Buffer.from(state).toString("base64");
+      // Handle messages
 
-            ws.send(
-              JSON.stringify({
-                type: "sync",
-                update: base64State,
-              }),
-            );
-            break;
-          }
-
-          case "update": {
-            if (!currentDoc) {
-              currentDoc = await DocumentManager.getDocument(
-                roomId,
-                "javascript",
-              );
-            }
-
-            const update = Buffer.from(data.update, "base64");
-            Y.applyUpdate(currentDoc, update);
-
-            // Broadcast to other clients
-            wss.clients.forEach((client) => {
-              if (client !== ws && client.readyState === WebSocket.OPEN) {
-                client.send(
-                  JSON.stringify({
-                    type: "update",
-                    update: data.update,
-                  }),
-                );
-              }
-            });
-
-            // Cache state
-            await DocumentManager.saveDocument(
-              `${roomId}:javascript`,
-              currentDoc,
-            );
-            break;
-          }
-
-          case "awareness": {
-            // Broadcast awareness updates to other clients
-            wss.clients.forEach((client) => {
-              if (client !== ws && client.readyState === WebSocket.OPEN) {
-                client.send(
-                  JSON.stringify({
-                    type: "awareness",
-                    awareness: data.awareness,
-                  }),
-                );
-              }
-            });
-            break;
-          }
+      // Handle disconnection
+      ws.on("close", async () => {
+        console.log(`Client disconnected from room: ${roomId}`);
+        if (currentDoc) {
+          await DocumentManager.saveDocument(roomId, currentDoc);
         }
-      } catch (err) {
-        console.error("Error handling WebSocket message:", err);
-      }
-    });
-
-    // Handle disconnection
-    ws.on("close", async () => {
-      console.log("WebSocket client disconnected");
-      if (currentDoc) {
-        await DocumentManager.saveDocument(`${roomId}:javascript`, currentDoc);
-      }
-    });
+      });
+    } catch (err) {
+      console.error("Error setting up WebSocket connection:", err);
+      ws.close(1011, "Internal server error");
+    }
   });
 
   return wss;

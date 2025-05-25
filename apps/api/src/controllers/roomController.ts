@@ -5,6 +5,24 @@ import { RedisMetadataService } from "../services/redisService.js";
 import mongoose from "mongoose";
 import { redisClient } from "index.js";
 import { v4 as uuidv4 } from "uuid";
+
+// Supported languages for the editor
+export const SUPPORTED_LANGUAGES = [
+  "javascript",
+  "typescript",
+  "python",
+  "java",
+  "cpp",
+  "csharp",
+  "php",
+  "ruby",
+  "go",
+  "rust",
+  "html",
+  "css",
+  "json",
+];
+
 // Get all rooms
 export const getRooms = async (req: Request, res: Response) => {
   try {
@@ -162,7 +180,7 @@ export const updateRoom = async (req: Request, res: Response) => {
 
     // Update the metadata in Redis cache
     const metadata = {
-      _id: room._id.toString(),
+      id: room.roomId,
       name: room.roomName,
       language: room.language,
       isPrivate: room.isPrivate,
@@ -246,7 +264,8 @@ export const joinRoom = async (req: Request, res: Response) => {
       }
     } else {
       // Not in cache, get from MongoDB
-      const room = await Room.findById(roomId);
+      const rooms = await Room.find({ roomId: roomId });
+      const room = rooms[0];
 
       if (!room) {
         return res.status(404).json({ message: "Room not found" });
@@ -257,14 +276,14 @@ export const joinRoom = async (req: Request, res: Response) => {
       }
 
       roomData = {
-        id: room._id.toString(),
-        name: room.name,
+        id: room.roomId,
+        name: room.roomName,
         language: room.language,
       };
 
       // Cache the room metadata for future requests
       const metadata = {
-        _id: room._id.toString(),
+        id: room.roomId,
         name: room.roomName,
         language: room.language,
         isPrivate: room.isPrivate,
@@ -279,9 +298,10 @@ export const joinRoom = async (req: Request, res: Response) => {
     res.json({
       message: "Successfully joined room",
       room: {
-        id: roomData._id || roomData.id,
+        id: roomData.id,
         name: roomData.name,
         language: roomData.language,
+        availableLanguages: SUPPORTED_LANGUAGES,
       },
     });
   } catch (error) {

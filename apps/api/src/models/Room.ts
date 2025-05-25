@@ -33,6 +33,7 @@ const RoomSchema = new Schema(
       default: "javascript",
     },
     isPrivate: {
+      required: true,
       type: Boolean,
       default: false,
     },

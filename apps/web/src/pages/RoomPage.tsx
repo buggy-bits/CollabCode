@@ -11,20 +11,14 @@ import {
 } from "@mui/material";
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import CodeEditor from "../components/CodeEditor";
-import {
-  initializeSockets,
-  joinRoom,
-  cleanupSockets,
-} from "../services/socket";
+import { ToastContainer } from "react-toastify";
+import "react-toastify/dist/ReactToastify.css";
 
 interface RoomData {
-  roomId: string;
-  roomName: string;
+  id: string;
+  name: string;
   language: string;
-  isPrivate: boolean;
-  password?: string;
-  createdAt: string;
-  createdBy: string;
+  availableLanguages: string[];
 }
 
 const RoomPage = () => {
@@ -32,18 +26,17 @@ const RoomPage = () => {
   const navigate = useNavigate();
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [room, setRoom] = useState<RoomData | null>(null);
-  const [socketConnected, setSocketConnected] = useState(false);
   const [username, setUsername] = useState<string>("Anonymous");
+  const [roomData, setRoomData] = useState<RoomData | null>(null);
 
   useEffect(() => {
-    // Get username from localStorage
-    const storedUsername = localStorage.getItem("username");
-    if (storedUsername) {
-      setUsername(storedUsername);
-    }
+    const joinRoom = async () => {
+      // Get username from localStorage
+      const storedUsername = localStorage.getItem("username");
+      if (storedUsername) {
+        setUsername(storedUsername);
+      }
 
-    const loadRoom = async () => {
       if (!roomId) {
         setError("Room ID is required");
         setIsLoading(false);
@@ -51,70 +44,48 @@ const RoomPage = () => {
       }
 
       try {
-        // Fetch room details from API
+        // Join the room
         const response = await fetch(
-          `${import.meta.env.VITE_API_URL}/api/rooms/${roomId}`,
+          `${import.meta.env.VITE_API_URL}/api/rooms/${roomId}/join`,
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              username: storedUsername || "Anonymous",
+            }),
+          },
         );
 
         if (!response.ok) {
-          if (response.status === 404) {
-            throw new Error("Room not found");
-          }
-          throw new Error("Failed to load room");
+          throw new Error("Failed to join room");
         }
 
-        const roomData = await response.json();
-        setRoom(roomData);
-
-        const roomSocket = initializeSockets();
-        // Initialize sockets
-        if (roomSocket) {
-          // Setup connection status listener
-          roomSocket.on("connect", () => {
-            console.log("Socket connected");
-            setSocketConnected(true);
-
-            // Join the room with the username
-            joinRoom(roomId, username);
-          });
-
-          roomSocket.on("connect_error", (error) => {
-            console.error("Socket connection error:", error);
-            setError("Failed to connect to room server");
-          });
-
-          roomSocket.on("disconnect", () => {
-            console.log("Socket disconnected");
-            setSocketConnected(false);
-          });
-
-          // If socket is already connected, join the room immediately
-          if (roomSocket.connected) {
-            setSocketConnected(true);
-            joinRoom(roomId, username);
-          }
-        }
-
-        setIsLoading(false);
+        const data = await response.json();
+        setRoomData(data.room);
       } catch (err) {
-        console.error("Error loading room:", err);
-        setError(
-          err instanceof Error ? err.message : "An unknown error occurred",
-        );
+        console.error("Error joining room:", err);
+        setError("Failed to join room. Please try again.");
+      } finally {
         setIsLoading(false);
       }
     };
 
-    loadRoom();
-
-    // Cleanup sockets when unmounting
-    return () => {
-      cleanupSockets();
-    };
-  }, [roomId, username]);
+    joinRoom();
+  }, [roomId]);
 
   const handleBackToHome = () => {
     navigate("/");
+  };
+
+  const handleLanguageChange = (newLanguage: string) => {
+    if (roomData) {
+      setRoomData({
+        ...roomData,
+        language: newLanguage,
+      });
+    }
   };
 
   if (isLoading) {
@@ -138,7 +109,7 @@ const RoomPage = () => {
     );
   }
 
-  if (error || !room) {
+  if (error || !roomId || !roomData) {
     return (
       <Container>
         <Box
@@ -170,6 +141,7 @@ const RoomPage = () => {
 
   return (
     <Box sx={{ height: "100vh", display: "flex", flexDirection: "column" }}>
+      <ToastContainer />
       <Box
         component="header"
         sx={{
@@ -190,12 +162,7 @@ const RoomPage = () => {
           >
             Home
           </Button>
-          <Typography variant="h6">{room.roomName}</Typography>
-          {!socketConnected && (
-            <Alert severity="warning" sx={{ ml: 2 }}>
-              Connecting...
-            </Alert>
-          )}
+          <Typography variant="h6">Room: {roomData.name}</Typography>
         </Box>
         <Box>
           <Typography variant="body2">
@@ -205,28 +172,13 @@ const RoomPage = () => {
       </Box>
 
       <Box sx={{ flexGrow: 1, overflow: "hidden" }}>
-        {socketConnected ? (
-          <CodeEditor
-            roomId={roomId || ""}
-            initialLanguage={room.language}
-            username={username}
-          />
-        ) : (
-          <Box
-            sx={{
-              display: "flex",
-              flexDirection: "column",
-              alignItems: "center",
-              justifyContent: "center",
-              height: "100%",
-            }}
-          >
-            <CircularProgress />
-            <Typography variant="h6" sx={{ mt: 2 }}>
-              Connecting to room...
-            </Typography>
-          </Box>
-        )}
+        <CodeEditor
+          roomId={roomId}
+          username={username}
+          initialLanguage={roomData.language}
+          availableLanguages={roomData.availableLanguages}
+          onLanguageChange={handleLanguageChange}
+        />
       </Box>
     </Box>
   );

@@ -16,7 +16,6 @@ import {
   MenuItem,
   FormControlLabel,
   Switch,
-  Divider,
   Alert,
   IconButton,
 } from "@mui/material";
@@ -114,7 +113,7 @@ const HomePage = () => {
       return;
     }
 
-    if (!createUsername.trim()) {
+    if (!createUsername?.trim()) {
       setError("Please enter a username");
       return;
     }

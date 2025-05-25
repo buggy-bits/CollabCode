@@ -6,7 +6,7 @@ import mongoose from "mongoose";
 import { createClient } from "redis";
 import dotenv from "dotenv";
 import http from "http";
-import { setupSocketServer } from "./socket/index.js";
+// import { setupSocketServer } from "./socket/index.js";
 import { setupWebSocketServer } from "./websocket/index.js";
 import roomRoutes from "./routes/roomRoutes.js";
 import { requestLogger } from "./middleware/requestLogger.js";
@@ -56,7 +56,7 @@ redisPubSubClient.on("connect", () =>
 })();
 
 // Setup Socket.IO server for chat
-const io = setupSocketServer(server);
+// const io = setupSocketServer(server);
 
 // Setup WebSocket server for Yjs
 const wss = setupWebSocketServer(server);
@@ -109,7 +109,7 @@ const gracefulShutdown = async () => {
   server.close(() => console.log("HTTP server closed"));
 
   // Close Socket.IO connections
-  io.close(() => console.log("Socket.IO server closed"));
+  // io.close(() => console.log("Socket.IO server closed"));
 
   // Close WebSocket connections
   wss.close(() => console.log("WebSocket server closed"));
