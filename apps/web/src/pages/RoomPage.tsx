@@ -25,6 +25,8 @@ import CodeEditor, { CodeEditorRef } from "../components/CodeEditor";
 import { ToastContainer } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
 import { io, Socket } from "socket.io-client";
+import { Terminal } from "xterm";
+import "xterm/css/xterm.css";
 
 interface RoomData {
   id: string;
@@ -56,7 +58,12 @@ const RoomPage = () => {
   const [isRunning, setIsRunning] = useState(false);
   const socketRef = useRef<Socket | null>(null);
   const editorRef = useRef<CodeEditorRef>(null);
-
+  const termRef = useRef<Terminal | null>(null);
+  const [isWaitingForInput, setIsWaitingForInput] = useState(false);
+  const [inputBuffer, setInputBuffer] = useState("");
+  const idleTimeoutRef = useRef<any>(null); // To track idle time
+  const IDLE_THRESHOLD = 1500; // Time in milliseconds before enabling input mode
+  const terminalRef = useRef<HTMLDivElement | null>(null); // Ref for the DOM container
   useEffect(() => {
     const joinRoom = async () => {
       // Get username from localStorage
@@ -116,10 +123,59 @@ const RoomPage = () => {
     }
   };
 
+  useEffect(() => {
+    if (!terminalRef.current) return; // Wait for the DOM to exist
+    const term = new Terminal({
+      theme: {
+        background: "#1e1e1e",
+        foreground: "#dcdcdc",
+      },
+      disableStdin: true, // disabled by default
+      convertEol: true,
+      fontFamily: "monospace",
+      fontSize: 14,
+    });
+
+    const handleKey = (key: string) => {
+      if (isWaitingForInput) {
+        if (key === "Enter") {
+          // Submit input
+          socketRef.current?.emit("evaluate", { input: inputBuffer });
+          termRef.current?.write("\r\n"); // Move to the next line
+          setInputBuffer(""); // Reset input buffer
+          setIsWaitingForInput(false); // Disable input mode after submission
+          termRef.current?.setOption("disableStdin", true); // Disable stdin
+        } else if (key === "Backspace") {
+          // Handle backspace
+          if (inputBuffer.length > 0) {
+            setInputBuffer(inputBuffer.slice(0, -1)); // Update buffer
+            termRef.current?.write("\b \b"); // Visually remove last character
+          }
+        } else {
+          // Handle normal characters
+          setInputBuffer((prev) => prev + key); // Update input buffer
+          termRef.current?.write(key); // Write to terminal
+        }
+      }
+    };
+    term.open(terminalRef.current); // Attach to the actual DOM node
+    term.write("Hello User\n"); // initial words on terminal
+    termRef.current = term;
+
+    term.onKey(({ key }) => {
+      handleKey(key);
+    });
+    return () => {
+      term.dispose();
+    };
+  }, [inputBuffer, isWaitingForInput]);
+
   const handleRunCode = async () => {
     try {
       setIsRunning(true);
       setIsOutputOpen(true);
+      termRef.current?.clear();
+      termRef.current?.write("Running...");
 
       // Get the code from the editor
       const userCode = editorRef.current?.getValue() || "";
@@ -143,18 +199,22 @@ const RoomPage = () => {
         socketRef.current.on("connect", () => {
           console.log("Connected to execution server");
           // Emit "run" event to execute Python code
+
           if (socketRef.current) {
             socketRef.current.emit("run", {
               code: userCode,
             });
-            console.log(userCode);
+
             // socketRef.current.emit('language', { execution_language:  roomData?.language || 'javascript'});
           }
         });
 
         socketRef.current.on("output", (data) => {
+          termRef.current?.write(data.output); // Append output line by line
+          resetIdleTimer(); // Reset idle timer whenever output is received
           console.log(data.output);
         });
+
         socketRef.current.on("disconnect", () => {
           setIsRunning(false);
           console.log("running set to false");
@@ -180,7 +240,22 @@ const RoomPage = () => {
       console.log("running set to false");
     }
   };
-
+  const resetIdleTimer = () => {
+    if (idleTimeoutRef.current) {
+      clearTimeout(idleTimeoutRef.current);
+    }
+    idleTimeoutRef.current = setTimeout(() => {
+      enableInputMode(); // Trigger input mode after idle period
+    }, IDLE_THRESHOLD); // Time threshold for idle state (3 seconds)
+  };
+  const enableInputMode = () => {
+    if (!isWaitingForInput) {
+      setIsWaitingForInput(true); // Set the state for input mode
+      termRef.current?.setOption("disableStdin", false); // Enable stdin for input
+      termRef.current?.write("\r\n> "); // Optionally, write a prompt if desired
+      termRef.current?.focus(); // Focus the terminal for user input
+    }
+  };
   const toggleUsersDrawer = () => {
     setIsUsersDrawerOpen(!isUsersDrawerOpen);
   };
@@ -375,6 +450,16 @@ const RoomPage = () => {
             </Box>
             <Box sx={{ flexGrow: 1, p: 2, bgcolor: "background.default" }}>
               {/* Output content will go here */}
+              <div>
+                <div
+                  id="terminal"
+                  ref={terminalRef}
+                  style={{ height: "100%", width: "100%" }}
+                ></div>
+
+                {/* <XTerm onKey={handleKey} /> */}
+                {/* Terminal is attached via ref and rendered inside this div */}
+              </div>
             </Box>
             <Box
               sx={{
