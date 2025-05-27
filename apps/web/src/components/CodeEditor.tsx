@@ -95,7 +95,9 @@ const CodeEditor = forwardRef<CodeEditorRef, CodeEditorProps>(
         if (editorRef.current && monacoRef.current) {
           const model = editorRef.current.getModel();
           if (model) {
+            // Set the language for the current model
             monacoRef.current.editor.setModelLanguage(model, newLanguage);
+            console.log("language change to : ", newLanguage);
           }
         }
 

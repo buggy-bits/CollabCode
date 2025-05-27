@@ -18,9 +18,6 @@ export const SUPPORTED_LANGUAGES = [
   "ruby",
   "go",
   "rust",
-  "html",
-  "css",
-  "json",
 ];
 
 // Get all rooms

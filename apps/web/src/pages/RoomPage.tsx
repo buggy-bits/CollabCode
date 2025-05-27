@@ -114,9 +114,9 @@ const RoomPage = () => {
           // Submit input
           console.log("Enter pressed, submitting:", inputBuffer);
           socketRef.current?.emit("evaluate", { code: inputBuffer });
-          termRef.current.write("\r\n");
-          setIsWaitingForInput(false);
           setInputBuffer("");
+          // termRef.current.write("\r\n");
+          setIsWaitingForInput(false);
         } else if (key === "\u007F" || key === "\b") {
           // Handle backspace
           if (inputBuffer.length > 0) {
@@ -224,7 +224,8 @@ const RoomPage = () => {
     if (!isWaitingForInput && termRef.current) {
       setIsWaitingForInput(true);
       termRef.current.focus();
-      termRef.current.write("\r\n> "); // Show input prompt
+      termRef.current.options.cursorBlink = true;
+      termRef.current.write(""); // Show input prompt
     }
   }, [isWaitingForInput]);
 
@@ -252,7 +253,7 @@ const RoomPage = () => {
 
       // Clear terminal and show running message
       termRef.current.clear();
-      termRef.current.write("Running code...\r\n");
+      // termRef.current.write("Running code...\r\n");
 
       const userCode = editorRef.current?.getValue() || "";
 
@@ -269,6 +270,7 @@ const RoomPage = () => {
         {
           transports: ["websocket"],
           autoConnect: true,
+          query: { language: roomData?.language || "javascript" },
         },
       );
 
@@ -279,7 +281,7 @@ const RoomPage = () => {
 
         if (socketRef.current && termRef.current) {
           socketRef.current.emit("run", { code: userCode });
-          termRef.current.write("Code execution started...\r\n");
+          termRef.current.write("\r\n");
         }
       });
 
@@ -292,7 +294,7 @@ const RoomPage = () => {
 
       socketRef.current.on("disconnect", () => {
         if (termRef.current) {
-          termRef.current.write("\r\nExecution completed.\r\n");
+          termRef.current.write("\r\n");
         }
         setIsRunning(false);
         console.log("Disconnected from execution server");
@@ -308,17 +310,19 @@ const RoomPage = () => {
         setIsRunning(false);
       });
 
-      socketRef.current.on("execution_result", (result) => {
-        console.log("Execution result:", result);
-        if (termRef.current && result) {
-          termRef.current.write(`\r\nResult: ${JSON.stringify(result)}\r\n`);
-        }
-      });
+      // socketRef.current.on("execution_result", (result) => {
+      //   console.log("Execution result:", result);
+      //   if (termRef.current && result) {
+      //     termRef.current.write(`\r\nResult: ${JSON.stringify(result)}\r\n`);
+      //   }
+      // });
     } catch (error) {
       console.error("Error running code:", error);
       if (termRef.current) {
         termRef.current.write(
-          `\r\nError: ${error instanceof Error ? error.message : "Unknown error"}\r\n`,
+          `\r\nError: ${
+            error instanceof Error ? error.message : "Unknown error"
+          }\r\n`,
         );
       }
       setIsRunning(false);

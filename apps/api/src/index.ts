@@ -16,7 +16,9 @@ import {
 } from "./services/redisService.js";
 
 // Load environment variables
-dotenv.config();
+// dotenv.config();
+// dotenv.config({ path: '.env.development' }); // or simply dotenv.config();
+dotenv.config({ path: `.env.${process.env.NODE_ENV || "development"}` });
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -95,12 +97,6 @@ app.get("/", (req, res) => {
   res.send("CollabCode API Server");
 });
 
-// Start server
-server.listen(port, () => {
-  console.log(`Server running on port ${port}`);
-  console.log(`WebSocket server available at ws://localhost:${port}`);
-});
-
 // Handle graceful shutdown
 const gracefulShutdown = async () => {
   console.log("Shutting down server gracefully...");
@@ -149,11 +145,12 @@ import ioClient from "socket.io-client"; // External Socket.IO client (v2.x)
 
 // Config
 const PROXY_PORT = 1234;
-const lang = "python";
-// const EXTERNAL_URL = `wss://${lang}.${process.env.EXECUTION_SERVER_ORIGIN}`;
-const EXTERNAL_URL = `wss://python.repl-web.programiz.com`;
+let executionLanguage = "javascript";
+// const EXTERNAL_URL = `wss://${executionLanguage}.${process.env.EXECUTION_SERVER_ORIGIN}`;
+// const EXTERNAL_URL = `wss://python.repl-web.programiz.com`;
 const sessionId = "YDIgjJnoc2"; // Replace this with dynamic value if needed
-
+// console.log(process.env.EXECUTION_SERVER_ORIGIN);
+// console.log(`wss://${executionLanguage}.${process.env.EXECUTION_SERVER_ORIGIN}`);
 const proxyApp = express();
 const httpServer = createServer(proxyApp);
 
@@ -166,17 +163,26 @@ const io = new IOServer(httpServer, {
 });
 
 io.on("connection", (clientSocket) => {
+  const { language } = clientSocket.handshake.query;
+
+  if (!language) {
+    clientSocket.disconnect(true);
+    return;
+  }
+
   console.log("✅ Frontend connected to proxy");
 
+  const EXTERNAL_URL = `wss://${language}.${process.env.EXECUTION_SERVER_ORIGIN}`;
   // Connect to external Socket.IO server (v2.x)
   const externalSocket = ioClient(EXTERNAL_URL, {
     transports: ["websocket"],
     query: {
       sessionId,
-      lang,
+      lang: language,
     },
+    autoConnect: false,
   });
-
+  externalSocket.connect();
   externalSocket.on("connect", () => {
     console.log("✅ Connected to external server");
   });
@@ -198,6 +204,11 @@ io.on("connection", (clientSocket) => {
   });
 
   // Forward messages from client → external (manually handle each event)
+  clientSocket.on("set-language", (data) => {
+    console.log("set-lang set to:", data.language);
+    executionLanguage = data.language;
+  });
+
   clientSocket.on("run", (data) => {
     console.log("➡️ Client → External: run", data);
     externalSocket.emit("run", data);
@@ -217,4 +228,10 @@ io.on("connection", (clientSocket) => {
 // Start server
 httpServer.listen(PROXY_PORT, () => {
   console.log(`🚀 Proxy server running at http://localhost:${PROXY_PORT}`);
+});
+
+// Start server
+server.listen(port, () => {
+  console.log(`Server running on port ${port}`);
+  console.log(`WebSocket server available at ws://localhost:${port}`);
 });

@@ -15,23 +15,9 @@ import {
   Box,
   CircularProgress,
 } from "@mui/material";
-
+import data from "../assets/availabelLanguages.json";
 // Languages supported by Monaco Editor
-const LANGUAGES = [
-  { value: "javascript", label: "JavaScript" },
-  { value: "typescript", label: "TypeScript" },
-  { value: "html", label: "HTML" },
-  { value: "css", label: "CSS" },
-  { value: "json", label: "JSON" },
-  { value: "python", label: "Python" },
-  { value: "java", label: "Java" },
-  { value: "csharp", label: "C#" },
-  { value: "cpp", label: "C++" },
-  { value: "php", label: "PHP" },
-  { value: "ruby", label: "Ruby" },
-  { value: "go", label: "Go" },
-  { value: "rust", label: "Rust" },
-];
+const LANGUAGES = data.languages;
 
 interface RoomFormProps {
   onSubmit: (roomData: {

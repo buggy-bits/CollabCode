@@ -25,7 +25,7 @@ import LockIcon from "@mui/icons-material/Lock";
 import PublicIcon from "@mui/icons-material/Public";
 import VisibilityOffIcon from "@mui/icons-material/VisibilityOff";
 import VisibilityIcon from "@mui/icons-material/Visibility";
-
+import data from "../assets/availabelLanguages.json";
 interface TabPanelProps {
   children?: React.ReactNode;
   index: number;
@@ -48,14 +48,7 @@ function TabPanel(props: TabPanelProps) {
   );
 }
 
-const SUPPORTED_LANGUAGES = [
-  { value: "javascript", label: "JavaScript" },
-  { value: "typescript", label: "TypeScript" },
-  { value: "python", label: "Python" },
-  { value: "java", label: "Java" },
-  { value: "cpp", label: "C++" },
-  { value: "json", label: "JSON" },
-];
+const SUPPORTED_LANGUAGES = data.languages;
 
 const HomePage = () => {
   const navigate = useNavigate();
