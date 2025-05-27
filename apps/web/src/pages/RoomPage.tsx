@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, useCallback } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import {
   Box,
@@ -50,8 +50,8 @@ const RoomPage = () => {
   const [roomData, setRoomData] = useState<RoomData | null>(null);
   const [users, setUsers] = useState<User[]>([]);
   const [isUsersDrawerOpen, setIsUsersDrawerOpen] = useState(false);
-  const [isOutputOpen, setIsOutputOpen] = useState(true);
-  const [outputWidth, setOutputWidth] = useState(400); // Default width in pixels
+  const [isOutputOpen, setIsOutputOpen] = useState(false);
+  const [outputWidth, setOutputWidth] = useState(400);
   const [isDragging, setIsDragging] = useState(false);
   const dragStartX = useRef<number>(0);
   const dragStartWidth = useRef<number>(0);
@@ -61,12 +61,93 @@ const RoomPage = () => {
   const termRef = useRef<Terminal | null>(null);
   const [isWaitingForInput, setIsWaitingForInput] = useState(false);
   const [inputBuffer, setInputBuffer] = useState("");
-  const idleTimeoutRef = useRef<any>(null); // To track idle time
-  const IDLE_THRESHOLD = 1500; // Time in milliseconds before enabling input mode
-  const terminalRef = useRef<HTMLDivElement | null>(null); // Ref for the DOM container
+  const idleTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const IDLE_THRESHOLD = 1500;
+  const terminalRef = useRef<HTMLDivElement | null>(null);
+
+  // Initialize terminal when the output panel is open and DOM element exists
+  useEffect(() => {
+    // Only initialize when output panel is open AND DOM element exists AND terminal not already created
+    if (!isOutputOpen || !terminalRef.current || termRef.current) return;
+
+    console.log("Initializing terminal...");
+
+    const term = new Terminal({
+      theme: {
+        background: "#1e1e1e",
+        foreground: "#dcdcdc",
+        cursor: "#ffffff",
+      },
+      cursorBlink: true,
+      convertEol: true,
+      fontFamily: "monospace",
+      fontSize: 14,
+      rows: 24,
+      cols: 80,
+    });
+
+    try {
+      term.open(terminalRef.current);
+      term.write("Terminal ready...\r\n");
+      termRef.current = term;
+      console.log("Terminal initialized successfully");
+    } catch (error) {
+      console.error("Failed to initialize terminal:", error);
+    }
+
+    return () => {
+      if (termRef.current) {
+        console.log("Disposing terminal");
+        termRef.current.dispose();
+        termRef.current = null;
+      }
+    };
+  }, [isOutputOpen]); // Initialize when output panel opens
+
+  // Handle key input with useCallback to prevent stale closures
+  const handleKey = useCallback(
+    (key: string) => {
+      if (!termRef.current) return;
+
+      if (isWaitingForInput) {
+        if (key === "\r") {
+          // Submit input
+          console.log("Enter pressed, submitting:", inputBuffer);
+          socketRef.current?.emit("evaluate", { code: inputBuffer });
+          termRef.current.write("\r\n");
+          setIsWaitingForInput(false);
+          setInputBuffer("");
+        } else if (key === "\u007F" || key === "\b") {
+          // Handle backspace
+          if (inputBuffer.length > 0) {
+            setInputBuffer((prev) => prev.slice(0, -1));
+            termRef.current.write("\b \b");
+          }
+        } else if (key.length === 1 && key >= " ") {
+          // Handle printable characters only
+          setInputBuffer((prev) => prev + key);
+          termRef.current.write(key);
+        }
+      }
+    },
+    [isWaitingForInput, inputBuffer],
+  );
+
+  // Set up terminal key handler
+  useEffect(() => {
+    if (!termRef.current) return;
+
+    const disposable = termRef.current.onKey(({ key }) => {
+      handleKey(key);
+    });
+
+    return () => {
+      disposable.dispose();
+    };
+  }, [handleKey]);
+
   useEffect(() => {
     const joinRoom = async () => {
-      // Get username from localStorage
       const storedUsername = localStorage.getItem("username");
       if (storedUsername) {
         setUsername(storedUsername);
@@ -79,7 +160,6 @@ const RoomPage = () => {
       }
 
       try {
-        // Join the room
         const response = await fetch(
           `${import.meta.env.VITE_API_URL}/api/rooms/${roomId}/join`,
           {
@@ -123,165 +203,128 @@ const RoomPage = () => {
     }
   };
 
-  useEffect(() => {
-    if (!terminalRef.current) return; // Wait for the DOM to exist
-    const term = new Terminal({
-      theme: {
-        background: "#1e1e1e",
-        foreground: "#dcdcdc",
-      },
-      disableStdin: false, // disabled by default
-      convertEol: true,
-      fontFamily: "monospace",
-      fontSize: 14,
-    });
-
-    term.open(terminalRef.current); // Attach to the actual DOM node
-    term.write("Hello User\n"); // initial words on terminal
-    termRef.current = term;
-
-    return () => {
-      term.dispose();
-    };
-  }, [isWaitingForInput]);
-  const handleKey = (key: string) => {
-    if (isWaitingForInput) {
-      if (key === "\r") {
-        // Submit input
-        console.log("Enter clicked");
-
-        socketRef.current?.emit("evaluate", { code: inputBuffer });
-        console.log("buffer: ", inputBuffer);
-        termRef.current?.write("\r\n"); // Move to the next line
-        setIsWaitingForInput(false); // Disable input mode after submission
-        setInputBuffer(""); // Reset input buffer
-
-        if (termRef.current) {
-          // termRef.current.options.disableStdin = true; // Disable stdin
-        }
-      } else if (key === "\u007F") {
-        console.log("backspace clicked");
-        // Handle backspace
-        if (inputBuffer.length > 0) {
-          setInputBuffer(inputBuffer.slice(0, -1)); // Update buffer
-          termRef.current?.write("\b \b"); // Visually remove last character
-        }
-      } else {
-        // Handle normal characters
-        console.log("current key:", key);
-        console.log("current buffer:", inputBuffer);
-        const newString = inputBuffer + key;
-        setInputBuffer(newString); // Update input buffer
-        termRef.current?.write(key); // Write to terminal
-      }
-    } else {
-      console.log("not in input mode");
+  const resetIdleTimer = useCallback(() => {
+    if (idleTimeoutRef.current) {
+      clearTimeout(idleTimeoutRef.current);
     }
-  };
-  termRef.current?.onKey(({ key }) => {
-    handleKey(key);
-  });
-  const handleRunCode = async () => {
-    clearIdleTimer(); // Stop old idle timers before running again
 
-    termRef.current?.write("\n");
-    termRef.current?.write("\x1b[2J\x1b[0;0H"); // Clear the entire Terminal
-    // termRef.current?.clear();
+    idleTimeoutRef.current = setTimeout(() => {
+      enableInputMode();
+    }, IDLE_THRESHOLD);
+  }, []);
+
+  const clearIdleTimer = useCallback(() => {
+    if (idleTimeoutRef.current) {
+      clearTimeout(idleTimeoutRef.current);
+      idleTimeoutRef.current = null;
+    }
+  }, []);
+
+  const enableInputMode = useCallback(() => {
+    if (!isWaitingForInput && termRef.current) {
+      setIsWaitingForInput(true);
+      termRef.current.focus();
+      termRef.current.write("\r\n> "); // Show input prompt
+    }
+  }, [isWaitingForInput]);
+
+  const handleRunCode = async () => {
+    clearIdleTimer();
 
     try {
       setIsRunning(true);
-      setIsOutputOpen(true);
-      termRef.current?.write("Running...");
 
-      // Get the code from the editor
+      // Ensure output panel is open
+      if (!isOutputOpen) {
+        setIsOutputOpen(true);
+        // Wait for the DOM to update and terminal to initialize
+        await new Promise((resolve) => setTimeout(resolve, 200));
+      }
+
+      // Double check terminal is ready
+      if (!termRef.current) {
+        console.error("Terminal still not initialized after waiting");
+        setIsRunning(false);
+        return;
+      }
+
+      console.log("Terminal is ready, proceeding with code execution");
+
+      // Clear terminal and show running message
+      termRef.current.clear();
+      termRef.current.write("Running code...\r\n");
+
       const userCode = editorRef.current?.getValue() || "";
-      console.log(socketRef.current);
+
+      // Disconnect existing socket if any
       if (socketRef.current) {
         socketRef.current.disconnect();
         socketRef.current = null;
       }
-      // Initialize socket connection if not already connected
-      if (!socketRef.current) {
-        socketRef.current = io(
-          import.meta.env.VITE_CODE_EXECUTION_SOCKET_URL ||
-            "http://localhost:1234",
-          {
-            transports: ["websocket"],
-            autoConnect: true,
-          },
-        );
 
-        // Set up socket event listeners
-        socketRef.current.on("connect", () => {
-          console.log("Connected to execution server");
-          // Emit "run" event to execute Python code
-          resetIdleTimer(); // Start idle detection after connection
+      // Create new socket connection
+      socketRef.current = io(
+        import.meta.env.VITE_CODE_EXECUTION_SOCKET_URL ||
+          "http://localhost:1234",
+        {
+          transports: ["websocket"],
+          autoConnect: true,
+        },
+      );
 
-          if (socketRef.current) {
-            socketRef.current.emit("run", {
-              code: userCode,
-            });
-            termRef.current?.reset(); // Clear the entire Terminal
+      // Set up socket event listeners
+      socketRef.current.on("connect", () => {
+        console.log("Connected to execution server");
+        resetIdleTimer();
 
-            // socketRef.current.emit('language', { execution_language:  roomData?.language || 'javascript'});
-          }
-        });
+        if (socketRef.current && termRef.current) {
+          socketRef.current.emit("run", { code: userCode });
+          termRef.current.write("Code execution started...\r\n");
+        }
+      });
 
-        socketRef.current.on("output", (data) => {
-          termRef.current?.write(data.output); // Append output line by line
-          resetIdleTimer(); // Reset idle timer whenever output is received
-          console.log(data.output);
-        });
+      socketRef.current.on("output", (data) => {
+        if (termRef.current && data.output) {
+          termRef.current.write(data.output);
+          resetIdleTimer();
+        }
+      });
 
-        socketRef.current.on("disconnect", () => {
-          termRef.current?.write("\n done with execution socket"); // Append output line by line
-          setIsRunning(false);
-          console.log("running set to false");
-          console.log("Disconnected from execution server");
-        });
+      socketRef.current.on("disconnect", () => {
+        if (termRef.current) {
+          termRef.current.write("\r\nExecution completed.\r\n");
+        }
+        setIsRunning(false);
+        console.log("Disconnected from execution server");
+      });
 
-        socketRef.current.on("error", (error) => {
-          console.error("Socket error:", error);
-          // TODO: Show error in output area
-        });
+      socketRef.current.on("error", (error) => {
+        console.error("Socket error:", error);
+        if (termRef.current) {
+          termRef.current.write(
+            `\r\nError: ${error.message || "Unknown error"}\r\n`,
+          );
+        }
+        setIsRunning(false);
+      });
 
-        socketRef.current.on("execution_result", (result) => {
-          console.log("Execution result:", result);
-          // TODO: Display result in output area
-        });
-      }
+      socketRef.current.on("execution_result", (result) => {
+        console.log("Execution result:", result);
+        if (termRef.current && result) {
+          termRef.current.write(`\r\nResult: ${JSON.stringify(result)}\r\n`);
+        }
+      });
     } catch (error) {
       console.error("Error running code:", error);
-      // TODO: Show error in output area
-    } finally {
-      setIsRunning(false);
-      // socketRef.current = null;
-      console.log("running set to false");
-    }
-  };
-  const resetIdleTimer = () => {
-    clearTimeout(idleTimeoutRef.current);
-
-    idleTimeoutRef.current = setTimeout(() => {
-      enableInputMode(); // Enter input mode if idle
-    }, IDLE_THRESHOLD);
-  };
-
-  const clearIdleTimer = () => {
-    clearTimeout(idleTimeoutRef.current);
-    idleTimeoutRef.current = null;
-  };
-
-  const enableInputMode = () => {
-    if (!isWaitingForInput) {
-      setIsWaitingForInput(true); // Set the state for input mode
-      termRef.current?.focus(); // Focus the terminal for user input
       if (termRef.current) {
-        // termRef.current.options.disableStdin = false; // Enable stdin for input
+        termRef.current.write(
+          `\r\nError: ${error instanceof Error ? error.message : "Unknown error"}\r\n`,
+        );
       }
-      // termRef.current?.write("\r\n> "); // Optionally, write a prompt if desired
+      setIsRunning(false);
     }
   };
+
   const toggleUsersDrawer = () => {
     setIsUsersDrawerOpen(!isUsersDrawerOpen);
   };
@@ -311,26 +354,30 @@ const RoomPage = () => {
       );
       setOutputWidth(newWidth);
     };
+
     if (isDragging) {
       document.addEventListener("mousemove", handleMouseMove);
       document.addEventListener("mouseup", handleMouseUp);
     }
+
     return () => {
       document.removeEventListener("mousemove", handleMouseMove);
       document.removeEventListener("mouseup", handleMouseUp);
     };
   }, [isDragging]);
 
-  // Cleanup socket connection on component unmount
+  // Cleanup on unmount
   useEffect(() => {
     return () => {
       if (socketRef.current) {
         socketRef.current.disconnect();
-        console.log("disconnected::");
       }
-      clearIdleTimer(); // clean up the idle timer
+      clearIdleTimer();
+      if (termRef.current) {
+        termRef.current.dispose();
+      }
     };
-  }, []);
+  }, [clearIdleTimer]);
 
   if (isLoading) {
     return (
@@ -421,7 +468,6 @@ const RoomPage = () => {
           <IconButton onClick={toggleUsersDrawer} color="primary">
             <PeopleIcon />
           </IconButton>
-
           <Typography variant="body2">
             Joined as: <strong>{username}</strong>
           </Typography>
@@ -474,18 +520,23 @@ const RoomPage = () => {
                 <ChevronRightIcon />
               </IconButton>
             </Box>
-            <Box sx={{ flexGrow: 1, p: 2, bgcolor: "background.default" }}>
-              {/* Output content will go here */}
-              <div>
-                <div
-                  id="terminal"
-                  ref={terminalRef}
-                  style={{ height: "100%", width: "100%" }}
-                ></div>
-
-                {/* <XTerm onKey={handleKey} /> */}
-                {/* Terminal is attached via ref and rendered inside this div */}
-              </div>
+            <Box
+              sx={{
+                flexGrow: 1,
+                bgcolor: "#1e1e1e",
+                overflow: "hidden",
+                display: "flex",
+                flexDirection: "column",
+              }}
+            >
+              <div
+                ref={terminalRef}
+                style={{
+                  height: "100%",
+                  width: "100%",
+                  minHeight: "200px",
+                }}
+              />
             </Box>
             <Box
               sx={{
