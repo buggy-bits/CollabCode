@@ -1,0 +1,14 @@
+{
+  "languages": [
+    { "value": "javascript", "label": "JavaScript" },
+    { "value": "typescript", "label": "TypeScript" },
+    { "value": "python", "label": "Python" },
+    { "value": "java", "label": "Java" },
+    { "value": "csharp", "label": "C#" },
+    { "value": "cpp", "label": "C++" },
+    { "value": "php", "label": "PHP" },
+    { "value": "ruby", "label": "Ruby" },
+    { "value": "golang", "label": "Go" },
+    { "value": "rust", "label": "Rust" }
+  ]
+}
