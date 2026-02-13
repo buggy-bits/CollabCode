@@ -7,7 +7,6 @@ import helmet from "helmet";
 import morgan from "morgan";
 import mongoose from "mongoose";
 import { createClient } from "redis";
-import http from "http";
 import { setupWebSocketServer } from "./websocket/index.js";
 import { setupChatHandler } from "./socket/chatHandler.js";
 import roomRoutes from "./routes/roomRoutes.js";
@@ -20,6 +19,7 @@ import {
   EXECUTION_SERVER_ORIGIN,
   MONGODB_URI,
   PORT,
+  PROXY_EXECUTION_SERVER_PORT,
   REDIS_URL,
 } from "./config/env.js";
 import { v4 as uuidv4 } from "uuid";
@@ -28,11 +28,11 @@ import { v4 as uuidv4 } from "uuid";
 
 const app = express();
 const port = PORT || 3000;
-const server = http.createServer(app);
+const mainServer = createServer(app);
 
 // Redis connection
 export const redisClient = createClient({
-  url: REDIS_URL || "redis://localhost:6379",
+  url: REDIS_URL,
 });
 
 // Create a separate Redis client for pub/sub subscriptions
@@ -63,11 +63,11 @@ redisPubSubClient.on("connect", () =>
   }
 })();
 
-const wss = setupWebSocketServer(server);
+const wss = setupWebSocketServer(mainServer);
 
 // ─── Chat Server (Socket.IO on same :3000 port) ───
 
-const chatIO = new IOServer(server, {
+const chatIO = new IOServer(mainServer, {
   cors: {
     origin: "*",
     methods: ["GET", "POST"],
@@ -110,27 +110,90 @@ app.get("/", (req, res) => {
   res.send("CollabCode API Server");
 });
 
-// Handle graceful shutdown
+// ─── Graceful Shutdown ───
+// Close ALL resources in the correct order:
+// 1. Socket.IO servers (disconnect all sockets with proper events)
+// 2. HTTP servers (stop accepting new connections)
+// 3. WebSocket server (close Yjs connections)
+// 4. Data stores (Redis, MongoDB)
+// 5. Force exit after timeout if anything hangs
+
+let isShuttingDown = false;
+
 const gracefulShutdown = async () => {
-  console.log("Shutting down server gracefully...");
+  if (isShuttingDown) return;
+  isShuttingDown = true;
 
-  server.close(() => console.log("HTTP server closed"));
-  wss.close(() => console.log("WebSocket server closed"));
+  console.log("\n🛑 Shutting down gracefully...");
 
-  if (redisClient.isOpen) {
-    await redisClient.disconnect();
-    console.log("Redis client connection closed");
-  }
-  if (redisPubSubClient.isOpen) {
-    await redisPubSubClient.disconnect();
-    console.log("Redis PubSub client connection closed");
-  }
-  if (mongoose.connection.readyState === 1) {
-    await mongoose.connection.close();
-    console.log("MongoDB connection closed");
-  }
+  // Force exit after 10 seconds if shutdown hangs
+  const forceExitTimer = setTimeout(() => {
+    console.error("Shutdown timed out after 10s — forcing exit");
+    process.exit(1);
+  }, 10_000);
+  forceExitTimer.unref(); // Don't let this timer keep the process alive
 
-  process.exit(0);
+  try {
+    // 1. Close Socket.IO servers (sends disconnect to all connected sockets)
+    await Promise.all([
+      new Promise<void>((resolve) => {
+        chatIO.close(() => {
+          console.log("Chat Socket.IO server closed");
+          resolve();
+        });
+      }),
+      new Promise<void>((resolve) => {
+        proxyIO.close(() => {
+          console.log("Proxy Socket.IO server closed");
+          resolve();
+        });
+      }),
+    ]);
+
+    // 2. Close HTTP servers (stops accepting new connections, waits for existing to finish)
+    await Promise.all([
+      new Promise<void>((resolve) => {
+        mainServer.close(() => {
+          console.log(`Main HTTP server closed (port ${port})`);
+          resolve();
+        });
+      }),
+      new Promise<void>((resolve) => {
+        proxyServer.close(() => {
+          console.log(`Proxy HTTP server closed (port ${PROXY_PORT})`);
+          resolve();
+        });
+      }),
+    ]);
+
+    // 3. Close WebSocket server (Yjs connections)
+    await new Promise<void>((resolve) => {
+      wss.close(() => {
+        console.log("Yjs WebSocket server closed");
+        resolve();
+      });
+    });
+
+    // 4. Close data stores
+    if (redisClient.isOpen) {
+      await redisClient.disconnect();
+      console.log("Redis client closed");
+    }
+    if (redisPubSubClient.isOpen) {
+      await redisPubSubClient.disconnect();
+      console.log("Redis PubSub client closed");
+    }
+    if (mongoose.connection.readyState === 1) {
+      await mongoose.connection.close();
+      console.log("MongoDB connection closed");
+    }
+
+    console.log("All resources closed. Exiting.");
+    process.exit(0);
+  } catch (err) {
+    console.error("Error during shutdown:", err);
+    process.exit(1);
+  }
 };
 
 process.on("SIGINT", gracefulShutdown);
@@ -142,19 +205,19 @@ process.on("uncaughtException", (err) => {
 
 // ─── Code Execution Proxy Server ───
 
-const PROXY_PORT = 1234;
+const PROXY_PORT = PROXY_EXECUTION_SERVER_PORT;
 
 const proxyApp = express();
-const httpServer = createServer(proxyApp);
+const proxyServer = createServer(proxyApp);
 
-const io = new IOServer(httpServer, {
+const proxyIO = new IOServer(proxyServer, {
   cors: {
     origin: "*",
     methods: ["GET", "POST"],
   },
 });
 
-io.on("connection", (clientSocket) => {
+proxyIO.on("connection", (clientSocket) => {
   const { language } = clientSocket.handshake.query;
 
   if (!language) {
@@ -209,11 +272,13 @@ io.on("connection", (clientSocket) => {
 });
 
 // Start servers
-httpServer.listen(PROXY_PORT, () => {
+proxyServer.listen(PROXY_PORT, () => {
   console.log(`🚀 Proxy server running at http://localhost:${PROXY_PORT}`);
 });
 
-server.listen(port, () => {
-  console.log(`Server running on port ${port}`);
-  console.log(`WebSocket server available at ws://localhost:${port}`);
+mainServer.listen(port, () => {
+  console.log(`🚀 Main server running on port ${port}`);
+  console.log(`   REST API:    http://localhost:${port}/api`);
+  console.log(`   WebSocket:   ws://localhost:${port}`);
+  console.log(`   Socket.IO:   http://localhost:${port}/chat`);
 });

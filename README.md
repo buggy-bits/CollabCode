@@ -1,8 +1,12 @@
 <div align="center">
 
-![Project Logo](./logo.png)
+  <a href="https://github.com/buggy-bits/CollabCode">
+    <picture>
+      <img src="./apps/web/public/collabCode_logo.svg" alt="CollabCode logo" width="260" >
+    </picture>
+  </a>
 
-# CollabCode
+<h3 align="center">CollabCode</h3>
 
 **Real-time collaborative code editor for teams.**
 
