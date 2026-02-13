@@ -9,5 +9,4 @@ export const {
   EXECUTION_SERVER_ORIGIN,
   ALLOWED_ORIGINS,
   REDIS_URL,
-  PROXY_EXECUTION_SERVER_PORT,
 } = process.env;

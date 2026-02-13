@@ -349,14 +349,11 @@ const RoomPage = () => {
         socketRef.current = null;
       }
 
-      socketRef.current = io(
-        ENV.CODE_EXECUTION_SOCKET_URL || "http://localhost:1234",
-        {
-          transports: ["websocket"],
-          autoConnect: true,
-          query: { language: roomData?.language || "javascript" },
-        },
-      );
+      socketRef.current = io(`${ENV.API_URL}/execution`, {
+        transports: ["websocket"],
+        autoConnect: true,
+        query: { language: roomData?.language || "javascript" },
+      });
 
       socketRef.current.on("connect", () => {
         resetIdleTimer();

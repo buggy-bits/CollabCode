@@ -62,11 +62,8 @@ graph TB
         Middleware["Middleware Stack\nCORS · Helmet · Morgan · Validator"]
         WSServer["WebSocket Server\ny-websocket"]
         DocManager["Document Manager\nYjs Y.Doc per room"]
-        ChatHandler["Chat Handler\nSocket.IO events"]
-    end
-
-    subgraph Proxy["Code Execution Proxy :1234"]
-        SIO["Socket.IO Bridge"]
+        ChatHandler["Chat Handler\nSocket.IO /chat"]
+        ExecHandler["Execution Handler\nSocket.IO /execution"]
     end
 
     subgraph Data["Data Layer"]
@@ -95,8 +92,8 @@ graph TB
     ChatUI -- "Socket.IO\nchat:send · chat:receive" --- ChatHandler
     REST --- Middleware
 
-    %% Frontend — Proxy
-    Terminal -- "Socket.IO\nrun · output" --- SIO
+    %% Frontend — Execution
+    Terminal -- "Socket.IO\nrun · output" --- ExecHandler
 
     %% API internals
     WSServer --- DocManager
@@ -108,8 +105,8 @@ graph TB
     ChatHandler -- "Pub/Sub broadcast\nper-room channels" --- Redis
     ChatHandler -. "Persist messages\n(optional)" .-> Mongo
 
-    %% Proxy — External
-    SIO -- "WSS\nper-session" --- Runtime
+    %% Execution — External
+    ExecHandler -- "WSS\nper-session" --- Runtime
 ```
 
 ## Quick Start
@@ -162,12 +159,12 @@ npm run dev
 
 This starts both servers via Turborepo:
 
-| Service              | URL                   |
-| -------------------- | --------------------- |
-| Frontend             | http://localhost:5173 |
-| API                  | http://localhost:3000 |
-| WebSocket            | ws://localhost:3000   |
-| Code execution proxy | ws://localhost:1234   |
+| Service             | URL                           |
+| ------------------- | ----------------------------- |
+| Frontend            | http://localhost:5173         |
+| API + WebSocket     | http://localhost:3000         |
+| Chat namespace      | ws://localhost:3000/chat      |
+| Execution namespace | ws://localhost:3000/execution |
 
 Open the frontend, create a room, and share the link.
 
@@ -201,13 +198,13 @@ The WebSocket layer uses **y-websocket** to serve as a Yjs awareness + sync prov
 
 ### Code execution
 
-The API runs a **proxy server** on port 1234 that bridges the browser to external sandboxed runtimes:
+The `/execution` Socket.IO namespace on port 3000 bridges the browser to external sandboxed runtimes:
 
 ```
-Browser → Socket.IO → Proxy (port 1234) → WSS → External Runtime
+Browser → Socket.IO /execution → WSS → External Runtime
 ```
 
-Each connection gets a unique session ID. The proxy forwards `run` and `evaluate` events and streams `output` back to the terminal.
+Each connection gets a unique session ID. The handler forwards `run` and `evaluate` events and streams `output` back to the terminal.
 
 ---
 
