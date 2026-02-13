@@ -8,7 +8,7 @@
     "lint:fix": "eslint --fix .",
     "format": "prettier --write \"**/*.{ts,tsx,md}\"",
     "check-types": "turbo run check-types",
-    "prepare": "husky install",
+    "prepare": "husky install || true",
     "start": "turbo run start"
   },
   "devDependencies": {
