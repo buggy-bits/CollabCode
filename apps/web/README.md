@@ -1,54 +1,63 @@
-# React + TypeScript + Vite
+# CollabCode Web
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+React frontend for the CollabCode collaborative code editor. Built with Vite, Material UI, and Monaco Editor.
 
-Currently, two official plugins are available:
+## Tech Stack
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+| Component     | Technology                                 |
+| ------------- | ------------------------------------------ |
+| Framework     | React 19                                   |
+| Bundler       | Vite 6                                     |
+| UI Library    | Material UI 7                              |
+| Editor        | Monaco Editor (VSCode engine)              |
+| Real-time     | Yjs + y-monaco + custom WebSocket provider |
+| Terminal      | xterm.js                                   |
+| Routing       | React Router 7                             |
+| Notifications | react-toastify                             |
 
-## Expanding the ESLint configuration
+## Key Components
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+### CodeEditor
 
-```js
-export default tseslint.config({
-  extends: [
-    // Remove ...tseslint.configs.recommended and replace with this
-    ...tseslint.configs.recommendedTypeChecked,
-    // Alternatively, use this for stricter rules
-    ...tseslint.configs.strictTypeChecked,
-    // Optionally, add this for stylistic rules
-    ...tseslint.configs.stylisticTypeChecked,
-  ],
-  languageOptions: {
-    // other options...
-    parserOptions: {
-      project: ['./tsconfig.node.json', './tsconfig.app.json'],
-      tsconfigRootDir: import.meta.dirname,
-    },
-  },
-})
+The core collaborative editing component:
+
+- **Monaco Editor** with VSCode-grade syntax highlighting and IntelliSense
+- **Yjs binding** via `y-monaco` for real-time conflict-free editing
+- **Language sync** — uses `Y.Map("metadata")` to broadcast language changes to all clients
+- **Awareness protocol** — shows remote cursors with user colors
+- **JetBrains Mono** font for code rendering
+
+### RoomPage
+
+The room interface featuring:
+
+- **Header bar** with room name, copy link button, run code, and user count
+- **Copy Room Link** — clipboard API with toast feedback and checkmark animation
+- **Output panel** — resizable xterm.js terminal for code execution output
+- **Users drawer** — slide-out panel showing connected collaborators
+
+## Environment Variables
+
+Create `.env.development` from the example:
+
+```bash
+cp .env.example .env.development
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+| Variable                         | Default                 | Description          |
+| -------------------------------- | ----------------------- | -------------------- |
+| `VITE_API_BASE_URL`              | `http://localhost:3000` | Backend API URL      |
+| `VITE_WS_URL`                    | `ws://localhost:3000`   | Yjs WebSocket URL    |
+| `VITE_CODE_EXECUTION_SOCKET_URL` | `http://localhost:1234` | Code execution proxy |
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+## Running
 
-export default tseslint.config({
-  plugins: {
-    // Add the react-x and react-dom plugins
-    'react-x': reactX,
-    'react-dom': reactDom,
-  },
-  rules: {
-    // other rules...
-    // Enable its recommended typescript rules
-    ...reactX.configs['recommended-typescript'].rules,
-    ...reactDom.configs.recommended.rules,
-  },
-})
+```bash
+# From repo root (starts both API + web via Turborepo)
+npm run dev
+
+# Or from this directory only
+npm run dev
 ```
+
+Opens at `http://localhost:5173` with hot module replacement.

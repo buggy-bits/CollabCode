@@ -1,3 +1,4 @@
+/* ─── Reset & Base ─── */
 * {
   box-sizing: border-box;
   margin: 0;
@@ -12,13 +13,12 @@ html, body {
 
 body {
   margin: 0;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen',
-    'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue',
-    sans-serif;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto',
+    'Helvetica Neue', sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  background-color: #242424;
-  color: rgba(255, 255, 255, 0.87);
+  background-color: #141414;
+  color: #F5F5F7;
 }
 
 #root {
@@ -28,12 +28,12 @@ body {
   flex-direction: column;
 }
 
-/* Material UI overrides */
+/* ─── Monaco Editor ─── */
 .monaco-editor .overflow-guard {
   border-radius: 4px;
 }
 
-/* Editor cursor styles */
+/* ─── Remote Cursor Styles ─── */
 .remote-cursor-before {
   position: absolute;
   border-left: 2px solid;
@@ -46,7 +46,8 @@ body {
   background: inherit;
   color: white;
   font-size: 10px;
-  padding: 2px 4px;
+  font-family: 'Inter', sans-serif;
+  padding: 2px 6px;
   border-radius: 4px;
   white-space: nowrap;
   top: -18px;
@@ -54,22 +55,38 @@ body {
   z-index: 1;
 }
 
-/* Custom scrollbar */
+/* ─── Custom Scrollbar (dark theme) ─── */
 ::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+  width: 8px;
+  height: 8px;
 }
 
 ::-webkit-scrollbar-track {
-  background: #f1f1f1;
-  border-radius: 5px;
+  background: #1C1C1E;
+  border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #888;
-  border-radius: 5px;
+  background: #3A3A3C;
+  border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #555;
+  background: #545456;
+}
+
+/* ─── Toast Overrides ─── */
+.Toastify__toast-container {
+  font-family: 'Inter', sans-serif !important;
+}
+
+.Toastify__toast {
+  border-radius: 10px !important;
+  font-size: 0.875rem !important;
+}
+
+/* ─── Selection ─── */
+::selection {
+  background: rgba(232, 168, 56, 0.3);
+  color: #F5F5F7;
 }

@@ -1,10 +1,55 @@
 {
   "$schema": "https://turbo.build/schema.json",
   "ui": "tui",
+
   "tasks": {
-    "build": {
+    "web#dev": {
+      "cache": false,
+      "persistent": true,
+      "env": ["WEB_PORT", "NEXT_PUBLIC_API_URL"],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        ".env.development.local",
+        ".env.local",
+        ".env.development",
+        ".env"
+      ]
+    },
+    "web#build": {
+      "env": ["NEXT_PUBLIC_API_URL", "WEB_PORT"],
       "dependsOn": ["^build"],
-      "inputs": ["$TURBO_DEFAULT$", ".env*"],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        ".env.development.local",
+        ".env.local",
+        ".env.development",
+        ".env"
+      ],
+      "outputs": ["dist/**"]
+    },
+
+    "api#dev": {
+      "cache": false,
+      "persistent": true,
+      "env": ["MONGODB_URI", "REDIS_URL", "PORT", "EXECUTION_SERVER_ORIGIN"],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        ".env.development.local",
+        ".env.local",
+        ".env.development",
+        ".env"
+      ]
+    },
+    "api#build": {
+      "env": ["MONGODB_URI", "REDIS_URL", "PORT", "EXECUTION_SERVER_ORIGIN"],
+      "dependsOn": ["^build"],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        ".env.development.local",
+        ".env.local",
+        ".env.development",
+        ".env"
+      ],
       "outputs": ["dist/**"]
     },
     "lint": {
@@ -12,10 +57,6 @@
     },
     "check-types": {
       "dependsOn": ["^check-types"]
-    },
-    "dev": {
-      "cache": false,
-      "persistent": true
     }
   }
 }

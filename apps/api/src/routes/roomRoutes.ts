@@ -18,7 +18,7 @@ import { auth } from "../middleware/auth.js";
 import { v4 as uuidv4 } from "uuid";
 import { z } from "zod";
 import { redisClient } from "../index.js";
-import { validateBody } from "middleware/validateBody.js";
+import { validateBody } from "../middleware/validateBody.js";
 
 const router = express.Router();
 
@@ -99,34 +99,9 @@ router.patch(
   },
 );
 
-// Route to get a list of public rooms
-router.get("/", async (req: any, res: any) => {
-  try {
-    // Get room IDs from Redis (most recent first, limit 20)
-    const roomIds = await redisClient.zRange("rooms", 0, 19, { REV: true });
-
-    const rooms = [];
-
-    // Get room data for each ID
-    for (const roomId of roomIds) {
-      const roomData = await redisClient.hGetAll(`room:${roomId}:info`);
-
-      // Only include public rooms
-      if (roomData && roomData.isPrivate !== "true") {
-        rooms.push({
-          id: roomId,
-          name: roomData.name,
-          language: roomData.language,
-          createdAt: roomData.createdAt,
-        });
-      }
-    }
-
-    return res.json(rooms);
-  } catch (error) {
-    console.error("Error listing rooms:", error);
-    return res.status(500).json({ error: "Failed to list rooms" });
-  }
+// health route
+router.get("/health", (req, res) => {
+  res.status(200).send("Room routes are healthy");
 });
 
 export default router;

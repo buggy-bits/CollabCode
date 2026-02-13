@@ -1,10 +1,13 @@
 import { WebsocketProvider } from "y-websocket";
 import * as Y from "yjs";
+import { ENV } from "../config/env";
 
 export class YjsWebSocketProvider extends WebsocketProvider {
   constructor(roomId: string, doc: Y.Doc, username: string) {
-    const WS_URL = import.meta.env.VITE_WS_URL || "ws://localhost:3000";
-    super(`${WS_URL}/rooms/${roomId}`, roomId, doc, {
+    const WS_URL = ENV.WS_URL || "ws://localhost:3000";
+    // WebsocketProvider internally connects to `${serverUrl}/${roomname}`
+    // so we just pass the base URL and the roomId as the room name
+    super(WS_URL, roomId, doc, {
       connect: true,
       WebSocketPolyfill: undefined,
       resyncInterval: 5000,

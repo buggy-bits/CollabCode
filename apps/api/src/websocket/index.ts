@@ -1,9 +1,10 @@
-import { Server as HttpServer } from "http";
+import { Server as HttpServer, IncomingMessage } from "http";
 import { WebSocketServer, WebSocket } from "ws";
 import * as Y from "yjs";
 import { RedisClientType } from "redis";
 import { redisClient } from "../index.js";
 import { RedisPubSubService } from "../services/redisService.js";
+import { Duplex } from "stream";
 
 import { setupWSConnection } from "y-websocket/bin/utils";
 
@@ -93,17 +94,19 @@ class DocumentManager {
   }
 }
 
-export function setupWebSocketServer(httpServer: HttpServer) {
-  const wss = new WebSocketServer({
-    server: httpServer,
-  });
+// ─── WebSocket Server Setup ───
+// Uses noServer: true so we can manually route upgrade requests.
+// This prevents conflicts with Socket.IO which also needs the upgrade event.
 
-  wss.on("connection", async (ws: WebSocket, request) => {
+export function setupWebSocketServer(httpServer: HttpServer) {
+  const wss = new WebSocketServer({ noServer: true });
+
+  wss.on("connection", async (ws: WebSocket, request: IncomingMessage) => {
     console.log("WebSocket client connected");
 
     // Extract room ID from URL
     const url = new URL(request.url!, `http://${request.headers.host}`);
-    const pathParts = url.pathname.split("/");
+    const pathParts = url.pathname.split("/").filter(Boolean);
     const roomId = pathParts[pathParts.length - 1];
 
     if (!roomId) {
@@ -130,8 +133,6 @@ export function setupWebSocketServer(httpServer: HttpServer) {
         }),
       );
 
-      // Handle messages
-
       // Handle disconnection
       ws.on("close", async () => {
         console.log(`Client disconnected from room: ${roomId}`);
@@ -144,6 +145,29 @@ export function setupWebSocketServer(httpServer: HttpServer) {
       ws.close(1011, "Internal server error");
     }
   });
+
+  // ─── Manual Upgrade Routing ───
+  // Only handle upgrade requests that are NOT for Socket.IO.
+  // Socket.IO uses the /socket.io/ path by default — those go to Socket.IO.
+  // Everything else (Yjs collaboration) goes to our raw WebSocket server.
+
+  httpServer.on(
+    "upgrade",
+    (request: IncomingMessage, socket: Duplex, head: Buffer) => {
+      const pathname = new URL(request.url!, `http://${request.headers.host}`)
+        .pathname;
+
+      // Let Socket.IO handle its own upgrade requests
+      if (pathname.startsWith("/socket.io")) {
+        return;
+      }
+
+      // Route everything else to the Yjs WebSocket server
+      wss.handleUpgrade(request, socket, head, (ws) => {
+        wss.emit("connection", ws, request);
+      });
+    },
+  );
 
   return wss;
 }

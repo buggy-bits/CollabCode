@@ -1,13 +1,8 @@
 import { body } from "express-validator";
+import { LANGUAGES } from "../config/languages.js";
 
-// List of supported languages
-export const SUPPORTED_LANGUAGES = [
-  "javascript",
-  "typescript",
-  "python",
-  "java",
-  "cpp",
-];
+// Use centralized language list
+export const SUPPORTED_LANGUAGES = LANGUAGES;
 
 export const createRoomValidation = [
   body("roomName")

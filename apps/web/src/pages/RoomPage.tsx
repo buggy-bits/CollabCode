@@ -15,18 +15,27 @@ import {
   ListItemText,
   ListItemAvatar,
   Avatar,
+  Badge,
+  Tooltip,
+  Chip,
 } from "@mui/material";
 import ArrowBackIcon from "@mui/icons-material/ArrowBack";
 import PlayArrowIcon from "@mui/icons-material/PlayArrow";
 import PeopleIcon from "@mui/icons-material/People";
 import ChevronRightIcon from "@mui/icons-material/ChevronRight";
 import ChevronLeftIcon from "@mui/icons-material/ChevronLeft";
+import ContentCopyIcon from "@mui/icons-material/ContentCopy";
+import CheckIcon from "@mui/icons-material/Check";
+import CodeIcon from "@mui/icons-material/Code";
+import ChatIcon from "@mui/icons-material/Chat";
 import CodeEditor, { CodeEditorRef } from "../components/CodeEditor";
-import { ToastContainer } from "react-toastify";
+import ChatPanel from "../components/ChatPanel";
+import { ToastContainer, toast } from "react-toastify";
 import "react-toastify/dist/ReactToastify.css";
 import { io, Socket } from "socket.io-client";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
+import { ENV } from "../config/env";
 
 interface RoomData {
   id: string;
@@ -50,6 +59,7 @@ const RoomPage = () => {
   const [roomData, setRoomData] = useState<RoomData | null>(null);
   const [users, setUsers] = useState<User[]>([]);
   const [isUsersDrawerOpen, setIsUsersDrawerOpen] = useState(false);
+  const previousUsersRef = useRef<Set<string>>(new Set());
   const [isOutputOpen, setIsOutputOpen] = useState(false);
   const [outputWidth, setOutputWidth] = useState(400);
   const [isDragging, setIsDragging] = useState(false);
@@ -64,24 +74,56 @@ const RoomPage = () => {
   const idleTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const IDLE_THRESHOLD = 1500;
   const terminalRef = useRef<HTMLDivElement | null>(null);
+  const [linkCopied, setLinkCopied] = useState(false);
+  const [isChatOpen, setIsChatOpen] = useState(false);
+  const [unreadCount, setUnreadCount] = useState(0);
 
-  // Initialize terminal when the output panel is open and DOM element exists
+  // Copy room link to clipboard
+  const handleCopyLink = async () => {
+    try {
+      await navigator.clipboard.writeText(window.location.href);
+      setLinkCopied(true);
+      toast.success("Room link copied to clipboard!", {
+        position: "top-right",
+        autoClose: 2000,
+        hideProgressBar: true,
+      });
+      setTimeout(() => setLinkCopied(false), 2000);
+    } catch {
+      // Fallback for older browsers
+      const textArea = document.createElement("textarea");
+      textArea.value = window.location.href;
+      textArea.style.position = "fixed";
+      textArea.style.left = "-9999px";
+      document.body.appendChild(textArea);
+      textArea.select();
+      document.execCommand("copy");
+      document.body.removeChild(textArea);
+      setLinkCopied(true);
+      toast.success("Room link copied!", {
+        position: "top-right",
+        autoClose: 2000,
+        hideProgressBar: true,
+      });
+      setTimeout(() => setLinkCopied(false), 2000);
+    }
+  };
+
+  // Initialize terminal when the output panel is open
   useEffect(() => {
-    // Only initialize when output panel is open AND DOM element exists AND terminal not already created
     if (!isOutputOpen || !terminalRef.current || termRef.current) return;
-
-    console.log("Initializing terminal...");
 
     const term = new Terminal({
       theme: {
-        background: "#1e1e1e",
-        foreground: "#dcdcdc",
-        cursor: "#ffffff",
+        background: "#141414",
+        foreground: "#F5F5F7",
+        cursor: "#E8A838",
+        selectionBackground: "rgba(232, 168, 56, 0.25)",
       },
       cursorBlink: true,
       convertEol: true,
-      fontFamily: "monospace",
-      fontSize: 14,
+      fontFamily: "'JetBrains Mono', monospace",
+      fontSize: 13,
       rows: 24,
       cols: 80,
     });
@@ -90,41 +132,34 @@ const RoomPage = () => {
       term.open(terminalRef.current);
       term.write("Terminal ready...\r\n");
       termRef.current = term;
-      console.log("Terminal initialized successfully");
     } catch (error) {
       console.error("Failed to initialize terminal:", error);
     }
 
     return () => {
       if (termRef.current) {
-        console.log("Disposing terminal");
         termRef.current.dispose();
         termRef.current = null;
       }
     };
-  }, [isOutputOpen]); // Initialize when output panel opens
+  }, [isOutputOpen]);
 
-  // Handle key input with useCallback to prevent stale closures
+  // Handle key input
   const handleKey = useCallback(
     (key: string) => {
       if (!termRef.current) return;
 
       if (isWaitingForInput) {
         if (key === "\r") {
-          // Submit input
-          console.log("Enter pressed, submitting:", inputBuffer);
           socketRef.current?.emit("evaluate", { code: inputBuffer });
           setInputBuffer("");
-          // termRef.current.write("\r\n");
           setIsWaitingForInput(false);
         } else if (key === "\u007F" || key === "\b") {
-          // Handle backspace
           if (inputBuffer.length > 0) {
             setInputBuffer((prev) => prev.slice(0, -1));
             termRef.current.write("\b \b");
           }
         } else if (key.length === 1 && key >= " ") {
-          // Handle printable characters only
           setInputBuffer((prev) => prev + key);
           termRef.current.write(key);
         }
@@ -133,25 +168,18 @@ const RoomPage = () => {
     [isWaitingForInput, inputBuffer],
   );
 
-  // Set up terminal key handler
+  // Terminal key handler
   useEffect(() => {
     if (!termRef.current) return;
-
-    const disposable = termRef.current.onKey(({ key }) => {
-      handleKey(key);
-    });
-
-    return () => {
-      disposable.dispose();
-    };
+    const disposable = termRef.current.onKey(({ key }) => handleKey(key));
+    return () => disposable.dispose();
   }, [handleKey]);
 
+  // Join room on mount
   useEffect(() => {
     const joinRoom = async () => {
       const storedUsername = localStorage.getItem("username");
-      if (storedUsername) {
-        setUsername(storedUsername);
-      }
+      if (storedUsername) setUsername(storedUsername);
 
       if (!roomId) {
         setError("Room ID is required");
@@ -161,22 +189,17 @@ const RoomPage = () => {
 
       try {
         const response = await fetch(
-          `${import.meta.env.VITE_API_URL}/api/rooms/${roomId}/join`,
+          `${ENV.API_URL}/api/rooms/${roomId}/join`,
           {
             method: "POST",
-            headers: {
-              "Content-Type": "application/json",
-            },
+            headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               username: storedUsername || "Anonymous",
             }),
           },
         );
 
-        if (!response.ok) {
-          throw new Error("Failed to join room");
-        }
-
+        if (!response.ok) throw new Error("Failed to join room");
         const data = await response.json();
         setRoomData(data.room);
       } catch (err) {
@@ -190,27 +213,99 @@ const RoomPage = () => {
     joinRoom();
   }, [roomId]);
 
-  const handleBackToHome = () => {
-    navigate("/");
-  };
+  // Track users via Yjs awareness
+  useEffect(() => {
+    previousUsersRef.current = new Set();
+    setUsers([]);
+
+    let awareness: any = null;
+    let cleanup: (() => void) | null = null;
+
+    const timeoutId = setTimeout(() => {
+      if (!editorRef.current) return;
+
+      awareness = editorRef.current.getAwareness();
+      if (!awareness) return;
+
+      const updateUsers = () => {
+        const states = awareness.getStates();
+        const currentUsers: User[] = [];
+        const currentUserIds = new Set<string>();
+
+        states.forEach((state: any, clientId: number) => {
+          if (state.user && state.user.name) {
+            const userId = `client-${clientId}`;
+            currentUserIds.add(userId);
+            currentUsers.push({
+              id: userId,
+              username: state.user.name,
+              avatar: undefined,
+            });
+          }
+        });
+
+        setUsers((prevUsers) => {
+          const previousUserIds = previousUsersRef.current;
+          const previousUsersMap = new Map(
+            prevUsers.map((u) => [u.id, u.username]),
+          );
+
+          currentUserIds.forEach((userId) => {
+            if (!previousUserIds.has(userId)) {
+              const user = currentUsers.find((u) => u.id === userId);
+              if (user && user.username !== username) {
+                toast.info(`${user.username} joined the room`, {
+                  position: "top-right",
+                  autoClose: 3000,
+                  hideProgressBar: true,
+                });
+              }
+            }
+          });
+
+          previousUserIds.forEach((userId) => {
+            if (!currentUserIds.has(userId)) {
+              const previousUsername = previousUsersMap.get(userId);
+              if (previousUsername && previousUsername !== username) {
+                toast.info(`${previousUsername} left the room`, {
+                  position: "top-right",
+                  autoClose: 3000,
+                  hideProgressBar: true,
+                });
+              }
+            }
+          });
+
+          previousUsersRef.current = currentUserIds;
+          return currentUsers;
+        });
+      };
+
+      updateUsers();
+      awareness.on("change", updateUsers);
+      cleanup = () => awareness?.off("change", updateUsers);
+    }, 500);
+
+    return () => {
+      clearTimeout(timeoutId);
+      cleanup?.();
+    };
+  }, [username, roomId]);
+
+  const handleBackToHome = () => navigate("/");
 
   const handleLanguageChange = (newLanguage: string) => {
     if (roomData) {
-      setRoomData({
-        ...roomData,
-        language: newLanguage,
-      });
+      setRoomData({ ...roomData, language: newLanguage });
     }
   };
 
   const resetIdleTimer = useCallback(() => {
-    if (idleTimeoutRef.current) {
-      clearTimeout(idleTimeoutRef.current);
-    }
-
-    idleTimeoutRef.current = setTimeout(() => {
-      enableInputMode();
-    }, IDLE_THRESHOLD);
+    if (idleTimeoutRef.current) clearTimeout(idleTimeoutRef.current);
+    idleTimeoutRef.current = setTimeout(
+      () => enableInputMode(),
+      IDLE_THRESHOLD,
+    );
   }, []);
 
   const clearIdleTimer = useCallback(() => {
@@ -225,7 +320,7 @@ const RoomPage = () => {
       setIsWaitingForInput(true);
       termRef.current.focus();
       termRef.current.options.cursorBlink = true;
-      termRef.current.write(""); // Show input prompt
+      termRef.current.write("");
     }
   }, [isWaitingForInput]);
 
@@ -235,38 +330,27 @@ const RoomPage = () => {
     try {
       setIsRunning(true);
 
-      // Ensure output panel is open
       if (!isOutputOpen) {
         setIsOutputOpen(true);
-        // Wait for the DOM to update and terminal to initialize
         await new Promise((resolve) => setTimeout(resolve, 200));
       }
 
-      // Double check terminal is ready
       if (!termRef.current) {
-        console.error("Terminal still not initialized after waiting");
+        console.error("Terminal not initialized after waiting");
         setIsRunning(false);
         return;
       }
 
-      console.log("Terminal is ready, proceeding with code execution");
-
-      // Clear terminal and show running message
       termRef.current.clear();
-      // termRef.current.write("Running code...\r\n");
-
       const userCode = editorRef.current?.getValue() || "";
 
-      // Disconnect existing socket if any
       if (socketRef.current) {
         socketRef.current.disconnect();
         socketRef.current = null;
       }
 
-      // Create new socket connection
       socketRef.current = io(
-        import.meta.env.VITE_CODE_EXECUTION_SOCKET_URL ||
-          "http://localhost:1234",
+        ENV.CODE_EXECUTION_SOCKET_URL || "http://localhost:1234",
         {
           transports: ["websocket"],
           autoConnect: true,
@@ -274,11 +358,8 @@ const RoomPage = () => {
         },
       );
 
-      // Set up socket event listeners
       socketRef.current.on("connect", () => {
-        console.log("Connected to execution server");
         resetIdleTimer();
-
         if (socketRef.current && termRef.current) {
           socketRef.current.emit("run", { code: userCode });
           termRef.current.write("\r\n");
@@ -293,11 +374,8 @@ const RoomPage = () => {
       });
 
       socketRef.current.on("disconnect", () => {
-        if (termRef.current) {
-          termRef.current.write("\r\n");
-        }
+        if (termRef.current) termRef.current.write("\r\n");
         setIsRunning(false);
-        console.log("Disconnected from execution server");
       });
 
       socketRef.current.on("error", (error) => {
@@ -309,13 +387,6 @@ const RoomPage = () => {
         }
         setIsRunning(false);
       });
-
-      // socketRef.current.on("execution_result", (result) => {
-      //   console.log("Execution result:", result);
-      //   if (termRef.current && result) {
-      //     termRef.current.write(`\r\nResult: ${JSON.stringify(result)}\r\n`);
-      //   }
-      // });
     } catch (error) {
       console.error("Error running code:", error);
       if (termRef.current) {
@@ -329,13 +400,8 @@ const RoomPage = () => {
     }
   };
 
-  const toggleUsersDrawer = () => {
-    setIsUsersDrawerOpen(!isUsersDrawerOpen);
-  };
-
-  const toggleOutput = () => {
-    setIsOutputOpen(!isOutputOpen);
-  };
+  const toggleUsersDrawer = () => setIsUsersDrawerOpen(!isUsersDrawerOpen);
+  const toggleOutput = () => setIsOutputOpen(!isOutputOpen);
 
   const handleMouseDown = (e: React.MouseEvent) => {
     setIsDragging(true);
@@ -343,14 +409,11 @@ const RoomPage = () => {
     dragStartWidth.current = outputWidth;
   };
 
-  const handleMouseUp = () => {
-    setIsDragging(false);
-  };
+  const handleMouseUp = () => setIsDragging(false);
 
   useEffect(() => {
     const handleMouseMove = (e: MouseEvent) => {
       if (!isDragging) return;
-
       const deltaX = dragStartX.current - e.clientX;
       const newWidth = Math.max(
         200,
@@ -373,13 +436,9 @@ const RoomPage = () => {
   // Cleanup on unmount
   useEffect(() => {
     return () => {
-      if (socketRef.current) {
-        socketRef.current.disconnect();
-      }
+      if (socketRef.current) socketRef.current.disconnect();
       clearIdleTimer();
-      if (termRef.current) {
-        termRef.current.dispose();
-      }
+      if (termRef.current) termRef.current.dispose();
     };
   }, [clearIdleTimer]);
 
@@ -393,11 +452,12 @@ const RoomPage = () => {
             alignItems: "center",
             justifyContent: "center",
             height: "100vh",
+            gap: 2,
           }}
         >
-          <CircularProgress />
-          <Typography variant="h6" sx={{ mt: 2 }}>
-            Loading room...
+          <CircularProgress sx={{ color: "primary.main" }} />
+          <Typography variant="body1" sx={{ color: "text.secondary" }}>
+            Joining room...
           </Typography>
         </Box>
       </Container>
@@ -416,7 +476,16 @@ const RoomPage = () => {
             height: "100vh",
           }}
         >
-          <Paper elevation={3} sx={{ p: 4, maxWidth: 500, width: "100%" }}>
+          <Paper
+            elevation={0}
+            sx={{
+              p: 4,
+              maxWidth: 440,
+              width: "100%",
+              border: "1px solid",
+              borderColor: "divider",
+            }}
+          >
             <Alert severity="error" sx={{ mb: 3 }}>
               {error || "Failed to load room"}
             </Alert>
@@ -436,48 +505,166 @@ const RoomPage = () => {
 
   return (
     <Box sx={{ height: "100vh", display: "flex", flexDirection: "column" }}>
-      <ToastContainer />
+      <ToastContainer
+        theme="dark"
+        toastStyle={{
+          backgroundColor: "#1C1C1E",
+          border: "1px solid #3A3A3C",
+          color: "#F5F5F7",
+        }}
+      />
+
+      {/* ─── Header Bar ─── */}
       <Box
         component="header"
         sx={{
-          p: 2,
+          px: 2,
+          py: 1.25,
           borderBottom: "1px solid",
           borderColor: "divider",
           display: "flex",
           justifyContent: "space-between",
           alignItems: "center",
+          bgcolor: "background.paper",
         }}
       >
-        <Box sx={{ display: "flex", alignItems: "center", gap: 2 }}>
-          <Button
-            variant="outlined"
+        <Box sx={{ display: "flex", alignItems: "center", gap: 1.5 }}>
+          <IconButton
             size="small"
-            startIcon={<ArrowBackIcon />}
             onClick={handleBackToHome}
+            sx={{
+              color: "text.secondary",
+              "&:hover": { color: "text.primary" },
+            }}
           >
-            Home
-          </Button>
-          <Typography variant="h6">Room: {roomData.name}</Typography>
+            <ArrowBackIcon fontSize="small" />
+          </IconButton>
+          <Box
+            sx={{
+              width: "1px",
+              height: 20,
+              bgcolor: "divider",
+            }}
+          />
+          <CodeIcon sx={{ fontSize: 20, color: "primary.main" }} />
+          <Typography
+            variant="subtitle1"
+            sx={{ color: "text.primary", fontWeight: 600 }}
+          >
+            {roomData.name}
+          </Typography>
         </Box>
-        <Box sx={{ display: "flex", alignItems: "center", gap: 2 }}>
+
+        <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+          {/* Copy Link Button */}
+          <Tooltip title={linkCopied ? "Copied!" : "Copy room link"}>
+            <Button
+              variant="outlined"
+              size="small"
+              startIcon={
+                linkCopied ? (
+                  <CheckIcon sx={{ fontSize: 16 }} />
+                ) : (
+                  <ContentCopyIcon sx={{ fontSize: 16 }} />
+                )
+              }
+              onClick={handleCopyLink}
+              sx={{
+                fontSize: "0.8125rem",
+                px: 1.5,
+                py: 0.5,
+                minWidth: "auto",
+                borderColor: linkCopied ? "success.main" : "divider",
+                color: linkCopied ? "success.main" : "text.secondary",
+                "&:hover": {
+                  borderColor: linkCopied ? "success.main" : "primary.main",
+                  color: linkCopied ? "success.main" : "primary.main",
+                },
+                transition: "all 0.2s",
+              }}
+            >
+              {linkCopied ? "Copied" : "Copy Link"}
+            </Button>
+          </Tooltip>
+
+          {/* Run Code Button */}
           <Button
             variant="contained"
-            color="primary"
+            size="small"
             startIcon={<PlayArrowIcon />}
             onClick={handleRunCode}
             disabled={isRunning}
+            sx={{ fontSize: "0.8125rem", px: 2 }}
           >
-            {isRunning ? "Running..." : "Run Code"}
+            {isRunning ? "Running..." : "Run"}
           </Button>
-          <IconButton onClick={toggleUsersDrawer} color="primary">
-            <PeopleIcon />
-          </IconButton>
-          <Typography variant="body2">
-            Joined as: <strong>{username}</strong>
-          </Typography>
+
+          {/* Chat Button */}
+          <Tooltip title="Room chat">
+            <IconButton
+              onClick={() => {
+                setIsChatOpen(true);
+                setUnreadCount(0);
+              }}
+              sx={{ color: "text.secondary" }}
+            >
+              <Badge
+                badgeContent={unreadCount}
+                sx={{
+                  "& .MuiBadge-badge": {
+                    bgcolor: "#FF453A",
+                    color: "#fff",
+                    fontSize: "0.65rem",
+                    height: 18,
+                    minWidth: 18,
+                  },
+                }}
+              >
+                <ChatIcon fontSize="small" />
+              </Badge>
+            </IconButton>
+          </Tooltip>
+
+          {/* Users Button */}
+          <Tooltip title="Users in room">
+            <IconButton
+              onClick={toggleUsersDrawer}
+              sx={{ color: "text.secondary" }}
+            >
+              <Badge
+                badgeContent={users.length}
+                sx={{
+                  "& .MuiBadge-badge": {
+                    bgcolor: "primary.main",
+                    color: "primary.contrastText",
+                    fontSize: "0.65rem",
+                    height: 18,
+                    minWidth: 18,
+                  },
+                }}
+              >
+                <PeopleIcon fontSize="small" />
+              </Badge>
+            </IconButton>
+          </Tooltip>
+
+          <Box sx={{ width: "1px", height: 20, bgcolor: "divider", mx: 0.5 }} />
+
+          <Chip
+            size="small"
+            label={username}
+            variant="outlined"
+            sx={{
+              borderColor: "divider",
+              color: "text.secondary",
+              fontSize: "0.75rem",
+              height: 26,
+            }}
+          />
         </Box>
       </Box>
 
+      {/* ─── Main Content ─── */}
       <Box
         sx={{
           flexGrow: 1,
@@ -494,9 +681,11 @@ const RoomPage = () => {
             initialLanguage={roomData.language}
             availableLanguages={roomData.availableLanguages}
             onLanguageChange={handleLanguageChange}
+            onRemoteLanguageChange={handleLanguageChange}
           />
         </Box>
 
+        {/* ─── Output Panel ─── */}
         {isOutputOpen && (
           <Box
             sx={{
@@ -506,11 +695,13 @@ const RoomPage = () => {
               display: "flex",
               flexDirection: "column",
               position: "relative",
+              bgcolor: "background.default",
             }}
           >
             <Box
               sx={{
-                p: 1,
+                px: 1.5,
+                py: 1,
                 borderBottom: "1px solid",
                 borderColor: "divider",
                 display: "flex",
@@ -519,15 +710,21 @@ const RoomPage = () => {
                 bgcolor: "background.paper",
               }}
             >
-              <Typography variant="subtitle2">Output</Typography>
-              <IconButton size="small" onClick={toggleOutput}>
-                <ChevronRightIcon />
+              <Typography variant="subtitle2" sx={{ color: "text.secondary" }}>
+                Output
+              </Typography>
+              <IconButton
+                size="small"
+                onClick={toggleOutput}
+                sx={{ color: "text.secondary" }}
+              >
+                <ChevronRightIcon fontSize="small" />
               </IconButton>
             </Box>
             <Box
               sx={{
                 flexGrow: 1,
-                bgcolor: "#1e1e1e",
+                bgcolor: "#141414",
                 overflow: "hidden",
                 display: "flex",
                 flexDirection: "column",
@@ -535,27 +732,21 @@ const RoomPage = () => {
             >
               <div
                 ref={terminalRef}
-                style={{
-                  height: "100%",
-                  width: "100%",
-                  minHeight: "200px",
-                }}
+                style={{ height: "100%", width: "100%", minHeight: "200px" }}
               />
             </Box>
+            {/* Drag handle */}
             <Box
               sx={{
                 position: "absolute",
                 left: 0,
                 top: 0,
                 bottom: 0,
-                width: "4px",
+                width: "3px",
                 cursor: "col-resize",
-                "&:hover": {
-                  bgcolor: "primary.main",
-                },
-                ...(isDragging && {
-                  bgcolor: "primary.main",
-                }),
+                transition: "background 0.15s",
+                "&:hover": { bgcolor: "primary.main" },
+                ...(isDragging && { bgcolor: "primary.main" }),
               }}
               onMouseDown={handleMouseDown}
             />
@@ -563,57 +754,108 @@ const RoomPage = () => {
         )}
 
         {!isOutputOpen && (
-          <IconButton
-            onClick={toggleOutput}
-            sx={{
-              position: "absolute",
-              right: 16,
-              top: 8,
-              zIndex: 100,
-              bgcolor: "background.paper",
-              border: "1px solid",
-              borderColor: "divider",
-              boxShadow: 2,
-              "&:hover": {
-                bgcolor: "action.hover",
-              },
-              transition: "all 0.2s",
-            }}
-          >
-            <ChevronLeftIcon />
-          </IconButton>
+          <Tooltip title="Show output" placement="left">
+            <IconButton
+              onClick={toggleOutput}
+              sx={{
+                position: "absolute",
+                right: 12,
+                top: 8,
+                zIndex: 100,
+                bgcolor: "background.paper",
+                border: "1px solid",
+                borderColor: "divider",
+                boxShadow: "0 2px 8px rgba(0,0,0,0.3)",
+                color: "text.secondary",
+                "&:hover": {
+                  bgcolor: "action.hover",
+                  color: "text.primary",
+                },
+              }}
+              size="small"
+            >
+              <ChevronLeftIcon fontSize="small" />
+            </IconButton>
+          </Tooltip>
         )}
       </Box>
 
+      {/* ─── Users Drawer ─── */}
       <Drawer
         anchor="right"
         open={isUsersDrawerOpen}
         onClose={toggleUsersDrawer}
-        PaperProps={{
-          sx: { width: 300 },
-        }}
+        PaperProps={{ sx: { width: 280 } }}
       >
-        <Box sx={{ p: 2 }}>
-          <Typography variant="h6" sx={{ mb: 2 }}>
+        <Box sx={{ p: 2.5 }}>
+          <Typography variant="h6" sx={{ mb: 2, fontSize: "1rem" }}>
             Users in Room
           </Typography>
-          <List>
-            {users.map((user) => (
-              <ListItem key={user.id}>
-                <ListItemAvatar>
-                  <Avatar src={user.avatar}>
-                    {user.username.charAt(0).toUpperCase()}
-                  </Avatar>
-                </ListItemAvatar>
+          <List disablePadding>
+            {users.length === 0 ? (
+              <ListItem disablePadding sx={{ py: 1 }}>
                 <ListItemText
-                  primary={user.username}
-                  secondary={user.id === "current-user" ? "You" : ""}
+                  primary="No users connected"
+                  primaryTypographyProps={{
+                    color: "text.secondary",
+                    fontSize: "0.875rem",
+                  }}
                 />
               </ListItem>
-            ))}
+            ) : (
+              users.map((user) => (
+                <ListItem
+                  key={user.id}
+                  disablePadding
+                  sx={{
+                    py: 1,
+                    px: 1,
+                    borderRadius: 1.5,
+                    "&:hover": { bgcolor: "action.hover" },
+                  }}
+                >
+                  <ListItemAvatar sx={{ minWidth: 40 }}>
+                    <Avatar
+                      sx={{
+                        width: 30,
+                        height: 30,
+                        bgcolor: "primary.main",
+                        color: "primary.contrastText",
+                        fontSize: "0.8125rem",
+                        fontWeight: 600,
+                      }}
+                    >
+                      {user.username.charAt(0).toUpperCase()}
+                    </Avatar>
+                  </ListItemAvatar>
+                  <ListItemText
+                    primary={user.username}
+                    secondary={user.username === username ? "You" : null}
+                    primaryTypographyProps={{ fontSize: "0.875rem" }}
+                    secondaryTypographyProps={{
+                      fontSize: "0.75rem",
+                      color: "primary.main",
+                    }}
+                  />
+                </ListItem>
+              ))
+            )}
           </List>
         </Box>
       </Drawer>
+
+      {/* ─── Chat Panel ─── */}
+      <ChatPanel
+        open={isChatOpen}
+        onClose={() => setIsChatOpen(false)}
+        roomId={roomId}
+        username={username}
+        onNewMessage={() => {
+          if (!isChatOpen) {
+            setUnreadCount((prev) => prev + 1);
+          }
+        }}
+      />
     </Box>
   );
 };

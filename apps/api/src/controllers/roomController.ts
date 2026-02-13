@@ -3,22 +3,12 @@ import Room, { IRoom } from "../models/Room.js";
 import { validationResult } from "express-validator";
 import { RedisMetadataService } from "../services/redisService.js";
 import mongoose from "mongoose";
-import { redisClient } from "index.js";
+import { redisClient } from "../index.js";
 import { v4 as uuidv4 } from "uuid";
+import { LANGUAGES } from "../config/languages.js";
 
 // Supported languages for the editor
-export const SUPPORTED_LANGUAGES = [
-  "javascript",
-  "typescript",
-  "python",
-  "java",
-  "cpp",
-  "csharp",
-  "php",
-  "ruby",
-  "go",
-  "rust",
-];
+const SUPPORTED_LANGUAGES = LANGUAGES;
 
 // Get all rooms
 export const getRooms = async (req: Request, res: Response) => {
@@ -39,14 +29,6 @@ export const getRoomById = async (req: Request, res: Response) => {
     if (!roomId) {
       return res.status(400).json({ message: "Room ID is required" });
     }
-
-    // // Try to get room metadata from Redis cache first
-    // const cachedMetadata = await RedisMetadataService.getMetadata(roomId);
-
-    // if (cachedMetadata) {
-    //   console.log(`Retrieved room metadata from cache for ${roomId}`);
-    //   return res.json(cachedMetadata);
-    // }
 
     // If not in cache, get from MongoDB
     const room = await Room.find({ roomId: roomId }).select(
@@ -322,7 +304,7 @@ export const updateLanguage = async (req: Request, res: Response) => {
     }
 
     const { language } = req.body;
-    const room = await Room.findById(roomId);
+    const room = await Room.findOne({ roomId });
 
     if (!room) {
       return res.status(404).json({ message: "Room not found" });

@@ -67,7 +67,7 @@ export class RedisPubSubService {
       await subClient.connect();
 
       // Subscribe to channel
-      await subClient.subscribe(channel, (message) => {
+      await subClient.subscribe(channel, (message: string) => {
         try {
           const parsedMessage = JSON.parse(message);
           callback(parsedMessage);
@@ -171,7 +171,7 @@ export class RedisPresenceService {
       const usersData = await redisClient.hGetAll(usersKey);
 
       return Object.entries(usersData).map(([socketId, userData]) => {
-        const user = JSON.parse(userData);
+        const user = JSON.parse(userData as string);
         return {
           id: socketId,
           ...user,

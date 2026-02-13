@@ -1,32 +1,38 @@
 import express from "express";
-import cors from "cors";
+import { createServer } from "http";
+import { Server as IOServer } from "socket.io";
+import ioClient from "socket.io-client";
+import corsMiddleware from "./config/cors.js";
 import helmet from "helmet";
 import morgan from "morgan";
 import mongoose from "mongoose";
 import { createClient } from "redis";
-import dotenv from "dotenv";
 import http from "http";
-// import { setupSocketServer } from "./socket/index.js";
 import { setupWebSocketServer } from "./websocket/index.js";
+import { setupChatHandler } from "./socket/chatHandler.js";
 import roomRoutes from "./routes/roomRoutes.js";
 import { requestLogger } from "./middleware/requestLogger.js";
 import {
   RedisPubSubService,
   RedisPresenceService,
 } from "./services/redisService.js";
+import {
+  EXECUTION_SERVER_ORIGIN,
+  MONGODB_URI,
+  PORT,
+  REDIS_URL,
+} from "./config/env.js";
+import { v4 as uuidv4 } from "uuid";
 
-// Load environment variables
-// dotenv.config();
-// dotenv.config({ path: '.env.development' }); // or simply dotenv.config();
-dotenv.config({ path: `.env.${process.env.NODE_ENV || "development"}` });
+// ─── Main API Server ───
 
 const app = express();
-const port = process.env.PORT || 3000;
+const port = PORT || 3000;
 const server = http.createServer(app);
 
 // Redis connection
 export const redisClient = createClient({
-  url: process.env.REDIS_URL || "redis://localhost:6379",
+  url: REDIS_URL || "redis://localhost:6379",
 });
 
 // Create a separate Redis client for pub/sub subscriptions
@@ -49,7 +55,7 @@ redisPubSubClient.on("connect", () =>
     await redisPubSubClient.connect();
     console.log("Connected to Redis");
 
-    // Initialize Redis services after connection with type casting to avoid type errors
+    // Initialize Redis services after connection
     await RedisPubSubService.init(redisClient as any);
     await RedisPresenceService.init(redisClient as any);
   } catch (err) {
@@ -57,24 +63,31 @@ redisPubSubClient.on("connect", () =>
   }
 })();
 
-// Setup Socket.IO server for chat
-// const io = setupSocketServer(server);
-
-// Setup WebSocket server for Yjs
 const wss = setupWebSocketServer(server);
 
-// Middleware
-app.use(cors()); // Enable CORS for all routes
-app.use(helmet()); // Security middleware
-app.use(morgan("dev")); // Logging middleware
-app.use(express.urlencoded({ extended: true })); // Parse URL-encoded bodies
-app.use(express.json()); // Parse JSON bodies
-app.use(requestLogger); // Request debug logger
+// ─── Chat Server (Socket.IO on same :3000 port) ───
+
+const chatIO = new IOServer(server, {
+  cors: {
+    origin: "*",
+    methods: ["GET", "POST"],
+  },
+});
+
+setupChatHandler(chatIO);
+
+// Middlewares
+app.use(corsMiddleware);
+app.use(helmet());
+app.use(morgan("dev"));
+app.use(express.urlencoded({ extended: true }));
+app.use(express.json());
+app.use(requestLogger);
 
 // MongoDB connection
 mongoose
   .connect(
-    process.env.MONGODB_URI ||
+    MONGODB_URI ||
       "mongodb://admin:password@localhost:27017/collabcode?authSource=admin",
   )
   .then(() => console.log("Connected to MongoDB"))
@@ -101,28 +114,17 @@ app.get("/", (req, res) => {
 const gracefulShutdown = async () => {
   console.log("Shutting down server gracefully...");
 
-  // Close HTTP server (stops accepting new connections)
   server.close(() => console.log("HTTP server closed"));
-
-  // Close Socket.IO connections
-  // io.close(() => console.log("Socket.IO server closed"));
-
-  // Close WebSocket connections
   wss.close(() => console.log("WebSocket server closed"));
 
-  // Disconnect from Redis
   if (redisClient.isOpen) {
     await redisClient.disconnect();
     console.log("Redis client connection closed");
   }
-
-  // Disconnect from Redis PubSub client
   if (redisPubSubClient.isOpen) {
     await redisPubSubClient.disconnect();
     console.log("Redis PubSub client connection closed");
   }
-
-  // Disconnect from MongoDB
   if (mongoose.connection.readyState === 1) {
     await mongoose.connection.close();
     console.log("MongoDB connection closed");
@@ -131,7 +133,6 @@ const gracefulShutdown = async () => {
   process.exit(0);
 };
 
-// Listen for termination signals
 process.on("SIGINT", gracefulShutdown);
 process.on("SIGTERM", gracefulShutdown);
 process.on("uncaughtException", (err) => {
@@ -139,22 +140,13 @@ process.on("uncaughtException", (err) => {
   gracefulShutdown();
 });
 
-import { createServer } from "http";
-import { Server as IOServer } from "socket.io";
-import ioClient from "socket.io-client"; // External Socket.IO client (v2.x)
+// ─── Code Execution Proxy Server ───
 
-// Config
 const PROXY_PORT = 1234;
-let executionLanguage = "javascript";
-// const EXTERNAL_URL = `wss://${executionLanguage}.${process.env.EXECUTION_SERVER_ORIGIN}`;
-// const EXTERNAL_URL = `wss://python.repl-web.programiz.com`;
-const sessionId = "YDIgjJnoc2"; // Replace this with dynamic value if needed
-// console.log(process.env.EXECUTION_SERVER_ORIGIN);
-// console.log(`wss://${executionLanguage}.${process.env.EXECUTION_SERVER_ORIGIN}`);
+
 const proxyApp = express();
 const httpServer = createServer(proxyApp);
 
-// Socket.IO server for clients (React app, Node test app)
 const io = new IOServer(httpServer, {
   cors: {
     origin: "*",
@@ -172,24 +164,23 @@ io.on("connection", (clientSocket) => {
 
   console.log("✅ Frontend connected to proxy");
 
-  const EXTERNAL_URL = `wss://${language}.${process.env.EXECUTION_SERVER_ORIGIN}`;
-  // Connect to external Socket.IO server (v2.x)
+  // Generate a unique session ID per connection
+  const sessionId = uuidv4().slice(0, 10);
+
+  const EXTERNAL_URL = `wss://${language}.${EXECUTION_SERVER_ORIGIN}`;
   const externalSocket = ioClient(EXTERNAL_URL, {
     transports: ["websocket"],
-    query: {
-      sessionId,
-      lang: language,
-    },
+    query: { sessionId, lang: language },
     autoConnect: false,
   });
+
   externalSocket.connect();
+
   externalSocket.on("connect", () => {
     console.log("✅ Connected to external server");
   });
 
-  // Forward specific events from external → client (manually handle each event)
   externalSocket.on("output", (data) => {
-    console.log("⬅️ External → Client: output", data);
     clientSocket.emit("output", data);
   });
 
@@ -203,19 +194,11 @@ io.on("connection", (clientSocket) => {
     clientSocket.emit("error", "External server connection failed.");
   });
 
-  // Forward messages from client → external (manually handle each event)
-  clientSocket.on("set-language", (data) => {
-    console.log("set-lang set to:", data.language);
-    executionLanguage = data.language;
-  });
-
   clientSocket.on("run", (data) => {
-    console.log("➡️ Client → External: run", data);
     externalSocket.emit("run", data);
   });
 
   clientSocket.on("evaluate", (data) => {
-    console.log("➡️ Client → External: evaluate", data);
     externalSocket.emit("evaluate", data);
   });
 
@@ -225,12 +208,11 @@ io.on("connection", (clientSocket) => {
   });
 });
 
-// Start server
+// Start servers
 httpServer.listen(PROXY_PORT, () => {
   console.log(`🚀 Proxy server running at http://localhost:${PROXY_PORT}`);
 });
 
-// Start server
 server.listen(port, () => {
   console.log(`Server running on port ${port}`);
   console.log(`WebSocket server available at ws://localhost:${port}`);
